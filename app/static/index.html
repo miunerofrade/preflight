@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Preflight — security check for AI agent input</title>
+  <meta name="description" content="Paste untrusted content, get an allow / review / block verdict before it reaches your AI agent.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3.5' fill='%234f46e5'/><text x='8' y='12' font-size='10' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>P</text></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="shell">
+  <header class="masthead">
+    <p class="overline">Powered by Clocked · injection · script · pii · decide</p>
+    <h1>Preflight</h1>
+    <p class="tagline">Security check for anything you are about to feed an AI agent.</p>
+    <p class="lede">
+      Agents read email, web pages, documents and code written by strangers. One scan here runs
+      prompt-injection detection, script-behavior analysis and PII masking over the content, then
+      issues an allow / review / block verdict with character-exact evidence.
+    </p>
+  </header>
+
+  <section class="panel" aria-labelledby="input-label">
+    <div class="panel-head">
+      <label class="field-label" id="input-label" for="input">Untrusted content</label>
+      <span class="hint" id="charcount" aria-live="polite">0 characters</span>
+    </div>
+    <textarea id="input" rows="9" spellcheck="false"
+      placeholder="Paste an email, a web page, a document, or a script… (or drop a PDF / image here)"></textarea>
+    <div class="toolbar">
+      <div class="mode-switch" role="group" aria-label="Scan mode">
+        <button id="mode-single" class="mode-btn active" type="button">Single</button>
+        <button id="mode-batch" class="mode-btn" type="button">Batch</button>
+      </div>
+      <div class="toolbar-actions">
+        <button id="file-btn" class="btn btn-quiet" type="button">Scan a PDF / image…</button>
+        <button id="run" class="btn btn-primary" type="button">Run preflight check</button>
+      </div>
+    </div>
+    <input type="file" id="file" accept=".pdf,application/pdf,image/*" hidden>
+    <p class="hint" id="mode-hint"></p>
+    <div class="examples">
+      <p class="field-label">Try an example — one click fills the box and scans</p>
+      <div class="example-grid" id="example-grid"></div>
+    </div>
+  </section>
+
+  <p id="error" class="error" role="alert" hidden></p>
+
+  <section id="results" class="results" aria-live="polite" hidden>
+    <section class="panel" id="batch" hidden></section>
+
+    <section class="verdict panel" aria-labelledby="verdict-word">
+      <div class="gauge" role="img" id="gauge" aria-label="Verdict confidence gauge">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="gauge-track" cx="60" cy="60" r="52"></circle>
+          <circle class="gauge-fill" id="gauge-fill" cx="60" cy="60" r="52"></circle>
+        </svg>
+        <div class="gauge-center">
+          <span id="gauge-num">—</span>
+          <span class="gauge-cap">confidence</span>
+        </div>
+      </div>
+      <div class="verdict-main">
+        <p class="overline">Verdict</p>
+        <p class="verdict-word" id="verdict-word">—</p>
+        <p class="verdict-conf" id="verdict-conf"></p>
+      </div>
+      <div class="verdict-probs" id="verdict-probs"></div>
+    </section>
+
+    <div class="cards">
+      <article class="card panel" id="card-injection">
+        <p class="overline">Layer 1 · Guard</p>
+        <h2>Prompt injection</h2>
+        <div class="card-body" id="body-injection"></div>
+      </article>
+
+      <article class="card panel" id="card-script">
+        <p class="overline">Layer 2 · Inspect</p>
+        <h2>Script safety</h2>
+        <div class="card-body" id="body-script"></div>
+      </article>
+
+      <article class="card panel" id="card-pii">
+        <p class="overline">Layer 3 · Protect</p>
+        <h2>Personal data</h2>
+        <div class="card-body" id="body-pii"></div>
+      </article>
+    </div>
+
+    <section class="panel" aria-labelledby="source-label">
+      <div class="panel-head">
+        <h2 id="source-label">Annotated source</h2>
+        <div class="legend" aria-hidden="true">
+          <span class="key"><i class="dot dot-inj"></i>injection</span>
+          <span class="key"><i class="dot dot-script"></i>script</span>
+          <span class="key"><i class="dot dot-pii"></i>personal data</span>
+        </div>
+      </div>
+      <p class="routing" id="routing"></p>
+      <pre class="source" id="source"></pre>
+    </section>
+
+    <section class="panel" id="sanitized-panel" aria-labelledby="sanitized-label" hidden>
+      <div class="panel-head">
+        <h2 id="sanitized-label">Sanitized copy</h2>
+        <button id="copy" class="btn btn-quiet" type="button">Copy sanitized text</button>
+      </div>
+      <pre class="source" id="sanitized"></pre>
+    </section>
+
+    <p class="stats" id="stats"></p>
+
+    <div class="export-row" id="export-row" hidden>
+      <button id="export-json" class="btn btn-quiet" type="button">Export JSON</button>
+      <button id="export-md" class="btn btn-quiet" type="button">Export Markdown</button>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <p>Built for the Clocked Build Challenge (Oct 21 – Nov 10, 2026) ·
+       repo runs locally with <code>uv run uvicorn app.main:app</code></p>
+  </footer>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

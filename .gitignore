@@ -1,0 +1,15 @@
+# secrets & internal docs (never commit)
+.env
+competitive-intel.md
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# node
+node_modules/
+
+# misc
+.DS_Store
+Thumbs.db
