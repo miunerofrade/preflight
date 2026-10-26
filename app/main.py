@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .scanner import scan
+from .scanner import scan, scan_url
+from .webcheck import summarize_url
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_CHARS = 20_000
@@ -44,6 +45,10 @@ class ScanRequest(BaseModel):
 
 class ScanBatchRequest(BaseModel):
     items: list[str]
+
+
+class ScanUrlRequest(BaseModel):
+    url: str
 
 
 def _guarded(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -142,3 +147,24 @@ def run_scan_batch(req: ScanBatchRequest) -> dict[str, Any]:
         return {"count": len(results), "results": results}
 
     return _guarded(batch)
+
+
+@app.post("/api/scan-url")
+def run_scan_url(req: ScanUrlRequest) -> dict[str, Any]:
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Provide a URL.")
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    if len(url) > 2000:
+        raise HTTPException(status_code=400, detail="URL is too long.")
+    # Local demo escape hatch: scanning private/loopback targets is blocked unless
+    # PREFLIGHT_ALLOW_PRIVATE_URLS is set (needed to scan the bundled demo page).
+    allow_private = os.environ.get("PREFLIGHT_ALLOW_PRIVATE_URLS", "").lower() in ("1", "true", "yes")
+    try:
+        summary = summarize_url(url, allow_private=allow_private)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # httpx network/HTTP errors
+        raise HTTPException(status_code=502, detail=f"Could not fetch the page: {exc}")
+    return _guarded(lambda: scan_url(url, summary))

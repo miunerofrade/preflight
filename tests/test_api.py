@@ -177,3 +177,56 @@ def test_scan_file_image_passes_images_to_scanner(client, monkeypatch):
     )
     assert res.status_code == 200
     assert captured["images"] == [b"\x89PNG fake"]
+
+
+# ---------- URL scan ----------
+
+
+def test_scan_url_blocks_private_targets(client, monkeypatch):
+    def boom(url, *, allow_private=False):
+        raise ValueError(
+            "Host '127.0.0.1' resolves to a non-public address (127.0.0.1); "
+            "fetching private network targets is not allowed."
+        )
+
+    monkeypatch.setattr(main_mod, "summarize_url", boom)
+    res = client.post("/api/scan-url", json={"url": "http://127.0.0.1:8000/static/demo/phish.html"})
+    assert res.status_code == 400
+    assert "non-public" in res.json()["detail"]
+
+
+def test_scan_url_prepends_scheme_and_returns_report(client, monkeypatch):
+    summary = {
+        "url": "https://example.com/login", "host": "example.com",
+        "flags": [], "brands_mentioned": [], "has_password_form": False,
+        "page": {"title": "t", "description": "", "headings": [], "forms": [],
+                 "links": [], "inline_script_count": 0, "script_srcs": [],
+                 "script_blob": "", "body_text": "hello", "base_url": "https://example.com/login"},
+    }
+    report = {
+        "source": {"kind": "url", "name": "example.com"},
+        "url": {"url": "https://example.com/login", "host": "example.com", "flags": [],
+                "brands_mentioned": [], "has_password_form": False, "title": "t",
+                "headings": [], "forms": [], "links": []},
+        "layers": {"impersonation": {}, "injection": {"injection": 0.01, "verdict": "benign",
+                    "severity": "none", "evidence": []}, "script": None, "identity": None},
+        "action": {"choice": "allow", "probabilities": {}, "confidence": 0.9},
+        "usage": {"calls": 3, "input_tokens": 90, "output_tokens": 3},
+        "total_ms": 700,
+    }
+    seen = {}
+
+    def fake_summarize(url, *, allow_private=False):
+        seen["url"] = url
+        return summary
+
+    def fake_scan_url(url, summary_):
+        return report
+
+    monkeypatch.setattr(main_mod, "summarize_url", fake_summarize)
+    monkeypatch.setattr(main_mod, "scan_url", fake_scan_url)
+    res = client.post("/api/scan-url", json={"url": "example.com/login"})
+    assert res.status_code == 200
+    assert seen["url"] == "https://example.com/login"
+    assert res.json()["source"]["kind"] == "url"
+    assert res.json()["action"]["choice"] == "allow"

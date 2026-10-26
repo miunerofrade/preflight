@@ -104,6 +104,36 @@ function downloadBlob(filename, content, type) {
 
 function markdownOf(report, text) {
   const lines = [];
+  if (report.source && report.source.kind === "url") {
+    const u = report.url || {};
+    lines.push(`# Preflight URL report`);
+    lines.push("");
+    lines.push(`- Generated: ${new Date().toISOString()}`);
+    lines.push(`- URL: ${u.url}`);
+    lines.push(`- Verdict: **${report.action.choice.toUpperCase()}** (confidence ${pct(report.action.confidence)})`);
+    lines.push(`- Calls: ${report.usage.calls} · tokens ${report.usage.input_tokens} in / ${report.usage.output_tokens} out · ${report.total_ms} ms`);
+    lines.push("");
+    lines.push(`## Deterministic flags`);
+    lines.push((u.flags || []).map((f) => `- [${f.severity}] ${f.title}: ${f.detail}`).join("\n") || "- none");
+    lines.push("");
+    const imp = report.layers.impersonation || {};
+    lines.push(`## Impersonation & intent (Clocked decide)`);
+    lines.push(`- brand_impersonation: ${imp.brand?.choice} (${pct(imp.brand?.confidence)})`);
+    lines.push(`- content_intent: ${imp.intent?.choice} (${pct(imp.intent?.confidence)})`);
+    lines.push("");
+    const inj = report.layers.injection || {};
+    lines.push(`## Guard — prompt injection on page content`);
+    lines.push(`Score ${pct(inj.injection)} · verdict ${inj.verdict} · severity ${inj.severity}`);
+    lines.push("");
+    const scr = report.layers.script;
+    lines.push(`## Inspect — inline scripts`);
+    lines.push(scr ? `Malicious ${pct(scr.malicious)} · verdict ${scr.verdict} · severity ${scr.severity}` : "No inline scripts found");
+    lines.push("");
+    const idn = report.layers.identity;
+    lines.push(`## Identity grounding`);
+    lines.push(idn ? JSON.stringify(idn.claims || idn, null, 2) : "No brand claims found on the page");
+    return lines.join("\n");
+  }
   lines.push(`# Preflight report`);
   lines.push("");
   lines.push(`- Generated: ${new Date().toISOString()}`);
@@ -226,6 +256,9 @@ function updateGauge(confidence, choice) {
 function render(data, text) {
   const { action, routing, layers } = data;
   $("batch").hidden = true;
+  $("cards").hidden = false;
+  $("url-cards").hidden = true;
+  $("source").closest(".panel").hidden = false;
 
   // verdict dashboard
   const word = $("verdict-word");
@@ -379,6 +412,110 @@ function renderBatch(data) {
   $("results").hidden = false;
 }
 
+/* ---------- URL mode ---------- */
+
+async function runUrl() {
+  let url = $("input").value.trim();
+  if (!url) { showError("Paste a link first (http/https)."); return; }
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  setBusy(true);
+  hideError();
+  try {
+    const data = await postJSON("/api/scan-url", { url });
+    lastReport = data; lastText = null;
+    renderUrl(data);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderUrl(data) {
+  const { action, layers } = data;
+  $("batch").hidden = true;
+  $("cards").hidden = true;
+  $("sanitized-panel").hidden = true;
+  $("source").closest(".panel").hidden = true;
+
+  // verdict dashboard (shared)
+  const word = $("verdict-word");
+  word.textContent = action.choice.toUpperCase();
+  word.className = `verdict-word verdict-${action.choice}`;
+  $("verdict-conf").textContent =
+    `Confidence ${(action.confidence * 100).toFixed(1)}% · decided by Clocked decide`;
+  updateGauge(action.confidence, action.choice);
+  $("verdict-probs").innerHTML = Object.entries(action.probabilities)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => bar(k, v, SEV_BAR[k] || ""))
+    .join("");
+
+  const u = data.url || {};
+  const sevChip = { high: "chip-bad", low: "chip-warn" };
+
+  const flags = (u.flags || []).map((f) =>
+    `<div class="flag"><span class="chip ${sevChip[f.severity] || "chip-neutral"}">${esc(f.severity)}</span>
+       <span><strong>${esc(f.title)}</strong> — ${esc(f.detail)}</span></div>`).join("")
+    || `<p class="note">No deterministic URL flags.</p>`;
+
+  const imp = layers.impersonation || {};
+  const idn = layers.identity;
+  const idSummary = idn
+    ? (idn.summary || idn.verdict || JSON.stringify(idn.claims || idn).slice(0, 400))
+    : "No brand claims found on the page — identity grounding skipped.";
+
+  $("url-cards").innerHTML = `
+    <article class="card panel">
+      <p class="overline">Deterministic</p>
+      <h2>Domain signals</h2>
+      <div class="card-body">${flags}
+        <p class="evidence-count">Page asks for a password: ${u.has_password_form ? "yes ⚠" : "no"} · ${u.title ? `title: "${esc(u.title)}"` : "no title"}</p>
+      </div>
+    </article>
+    <article class="card panel">
+      <p class="overline">Clocked decide</p>
+      <h2>Impersonation & intent</h2>
+      <div class="card-body">
+        <div class="score-row">
+          <p class="score">${chip(imp.brand?.choice || "?", imp.brand?.choice === "impersonation" ? "chip-bad" : imp.brand?.choice === "legitimate" ? "chip-ok" : "chip-neutral")}</p>
+        </div>
+        ${bar("brand_impersonation confidence", imp.brand?.confidence)}
+        ${bar("content_intent: " + (imp.intent?.choice || "?"), imp.intent?.confidence)}
+        <p class="evidence-count">Brands referenced on the page: ${(u.brands_mentioned || []).join(", ") || "none"}</p>
+      </div>
+    </article>
+    <article class="card panel">
+      <p class="overline">Guard · static fetch, no JS executed</p>
+      <h2>Prompt injection</h2>
+      <div class="card-body">
+        <div class="score-row">
+          <p class="score">${pct(layers.injection.injection).replace("%", "")}<small> / 100</small></p>
+          ${chip(`${layers.injection.verdict} · ${layers.injection.severity}`, SEV_CHIP[layers.injection.verdict] || "chip-neutral")}
+        </div>
+        ${topCats(layers.injection.categories)}
+        <p class="evidence-count">${(layers.injection.evidence || []).length} evidence span(s) · ${layers.injection.ms ?? "?"} ms</p>
+      </div>
+    </article>
+    <article class="card panel">
+      <p class="overline">Inspect + Grounding</p>
+      <h2>Scripts & identity</h2>
+      <div class="card-body">
+        ${layers.script
+          ? `<div class="score-row"><p class="score">${pct(layers.script.malicious).replace("%", "")}<small> / 100</small></p>
+             ${chip(`${layers.script.verdict} · ${layers.script.severity}`, SEV_CHIP[layers.script.verdict] || "chip-neutral")}</div>
+             ${bar("malicious", layers.script.malicious)}`
+          : `<p class="note">No inline scripts found on the page.</p>`}
+        <p class="note"><strong>Identity check:</strong> ${esc(String(idSummary)).slice(0, 300)}</p>
+      </div>
+    </article>`;
+
+  $("url-cards").hidden = false;
+  $("stats").textContent =
+    `${data.usage.calls} Clocked calls · ${data.usage.input_tokens} in / ${data.usage.output_tokens} out tokens · ${data.total_ms} ms total`;
+  $("export-row").hidden = false;
+  $("results").hidden = false;
+}
+
 /* ---------- misc ---------- */
 
 function showError(msg) {
@@ -436,21 +573,36 @@ function renderExamples() {
 }
 
 function setMode(mode) {
-  const batch = mode === "batch";
-  $("mode-single").classList.toggle("active", !batch);
-  $("mode-batch").classList.toggle("active", batch);
-  $("file-btn").hidden = batch;
-  $("mode-hint").textContent = batch
-    ? "Batch mode: paste up to 10 items, separated by a line containing only ---. Results are ranked by risk."
-    : "Single mode: one item per scan · Ctrl+Enter runs · nothing is stored.";
+  $("mode-single").classList.toggle("active", mode === "single");
+  $("mode-batch").classList.toggle("active", mode === "batch");
+  $("mode-url").classList.toggle("active", mode === "url");
+  $("file-btn").hidden = mode !== "single";
+  $("input").placeholder = mode === "url"
+    ? "https://example.com/login — fetched statically; the page's JS is never executed"
+    : mode === "batch"
+      ? "Paste up to 10 items, separated by a line containing only ---"
+      : "Paste an email, a web page, a document, or a script… (or drop a PDF / image here)";
+  $("mode-hint").textContent = mode === "url"
+    ? "URL mode: the page is fetched without executing its JavaScript; deterministic domain checks + Clocked decide / guard / inspect / grounding."
+    : mode === "batch"
+      ? "Batch mode: paste up to 10 items, separated by a line containing only ---. Results are ranked by risk."
+      : "Single mode: one item per scan · Ctrl+Enter runs · nothing is stored.";
 }
 
-const isBatch = () => $("mode-batch").classList.contains("active");
+const currentMode = () =>
+  $("mode-batch").classList.contains("active") ? "batch"
+  : $("mode-url").classList.contains("active") ? "url"
+  : "single";
 
 renderExamples();
 setMode("single");
 
-$("run").addEventListener("click", () => (isBatch() ? runBatch() : runScan()));
+$("run").addEventListener("click", () => {
+  const mode = currentMode();
+  if (mode === "batch") runBatch();
+  else if (mode === "url") runUrl();
+  else runScan();
+});
 $("copy").addEventListener("click", copySanitized);
 $("export-json").addEventListener("click", exportJson);
 $("export-md").addEventListener("click", exportMarkdown);
@@ -467,12 +619,17 @@ const dropZone = $("input");
 dropZone.addEventListener("dragover", (e) => e.preventDefault());
 dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
-  if (!isBatch() && e.dataTransfer.files[0]) scanFile(e.dataTransfer.files[0]);
+  if (currentMode() === "single" && e.dataTransfer.files[0]) scanFile(e.dataTransfer.files[0]);
 });
 
 $("input").addEventListener("input", (e) => {
   $("charcount").textContent = `${e.target.value.length.toLocaleString("en-US")} characters`;
 });
 $("input").addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") (isBatch() ? runBatch() : runScan());
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    const mode = currentMode();
+    if (mode === "batch") runBatch();
+    else if (mode === "url") runUrl();
+    else runScan();
+  }
 });

@@ -32,6 +32,7 @@
       <div class="mode-switch" role="group" aria-label="Scan mode">
         <button id="mode-single" class="mode-btn active" type="button">Single</button>
         <button id="mode-batch" class="mode-btn" type="button">Batch</button>
+        <button id="mode-url" class="mode-btn" type="button">URL</button>
       </div>
       <div class="toolbar-actions">
         <button id="file-btn" class="btn btn-quiet" type="button">Scan a PDF / image…</button>
@@ -70,7 +71,7 @@
       <div class="verdict-probs" id="verdict-probs"></div>
     </section>
 
-    <div class="cards">
+    <div class="cards" id="cards">
       <article class="card panel" id="card-injection">
         <p class="overline">Layer 1 · Guard</p>
         <h2>Prompt injection</h2>
@@ -89,6 +90,8 @@
         <div class="card-body" id="body-pii"></div>
       </article>
     </div>
+
+    <div class="cards" id="url-cards" hidden></div>
 
     <section class="panel" aria-labelledby="source-label">
       <div class="panel-head">
