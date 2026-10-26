@@ -36,15 +36,17 @@ data flow and the release contract. No demonstration site or video is included.
 Prompt injection is the #1 risk in the OWASP Top 10 for LLM applications, and real zero-click
 agent leaks have already shipped in the wild. Meanwhile the standard workflow is still
 "copy suspicious content, paste it into your agent, hope for the best". Preflight makes the
-paranoid step automatic — for **any** kind of agent input, not one vertical — and what it
-hands the agent is a checked copy, not the raw original.
+paranoid step automatic for every common way content reaches an agent — paste, file, image,
+link, batch — and what it hands the agent, for the formats the Codex integration supports,
+is a checked copy rather than the raw original.
 
 ## One gate, six steps
 
 Everything in this README serves one pass through the gate:
 
-1. **Content arrives** — a Codex task points at an email, a link, a PDF or a paste; it can
-   also arrive as a batch or an image. The agent has read nothing yet.
+1. **Content arrives** — a Codex task points at a workspace file, a text-layer PDF or a
+   public URL; the web interface also takes pastes, images and batches. The agent has read
+   nothing yet.
 2. **Screen** — Guard finds instructions written for machines rather than people, Inspect
    reads code without ever running it, Protect finds personal data; Decide recommends
    allow / review / block, and versioned local floors can raise that, never lower it.
@@ -52,17 +54,21 @@ Everything in this README serves one pass through the gate:
    registries say it is (`grounding` over Wikidata, RDAP/WHOIS, Tranco), where it
    redirected, when it was fetched and the SHA-256 of the response.
 4. **Prepare** — validated injection evidence is removed and personal data is masked into a
-   prepared copy; the copy is scanned again from scratch, and removing instructions always
-   needs a human.
-5. **Hand off** — the reviewer compares original and copy in one dialog, then approves the
-   exact copy hash; Codex reads only that approved snapshot through `preflight_read`.
-   Blocked or rejected tickets never ship text.
+   prepared copy that is offered only after a full recheck. Two shortcuts stay honest:
+   unchanged clean text reuses its existing scan, and a risky script input is replaced in
+   full with a fixed marker that is validated locally. Removing instructions always
+   requires a human.
+5. **Hand off** — a copy that passes screening can be read immediately; a copy that needs
+   review waits for a person, who compares original and copy in one dialog and approves the
+   exact copy hash before `preflight_read` releases that approved snapshot. Blocked or
+   rejected tickets never ship text. The integration is a cooperative convention — it does
+   not intercept other Codex read paths.
 6. **Keep the record** — the scan, the edits, the recheck and the receipts land in JSON and
    Markdown exports; seven real-response cases replay offline for regression.
 
-Vertical competitors gate one document type for one business decision. Preflight gates
-everything an agent is about to read, and the artifact it produces — a checked, hash-pinned
-copy with its retrieval receipt — is what the agent actually consumes.
+What the pass produces — a checked, hash-pinned copy with its retrieval receipt, for the
+formats the integration supports — is what Codex actually consumes; everything else gets
+the same screening and a full record.
 
 ## Features
 
