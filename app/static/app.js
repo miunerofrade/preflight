@@ -450,6 +450,11 @@ function renderUrl(data) {
     .map(([k, v]) => bar(k, v, SEV_BAR[k] || ""))
     .join("");
 
+  if (data.risk && data.risk.malicious_probability != null) {
+    $("verdict-conf").textContent +=
+      ` · Malicious / pirated site probability ${(data.risk.malicious_probability * 100).toFixed(1)}%`;
+  }
+
   const u = data.url || {};
   const sevChip = { high: "chip-bad", low: "chip-warn" };
 

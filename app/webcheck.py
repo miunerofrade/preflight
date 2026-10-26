@@ -179,6 +179,7 @@ def page_flags(host: str, page: dict, claimed: list[str]) -> list[dict]:
         if offers_download:
             flags.append({
                 "severity": "high",
+                "brand": brand,
                 "title": f"Unofficial download source for '{brand}' software",
                 "detail": f"The page attributes its software to {brand} and offers "
                           f"{dl.get('cta_count', 0)} download action(s), but '{host}' is not one of the "
@@ -188,6 +189,7 @@ def page_flags(host: str, page: dict, claimed: list[str]) -> list[dict]:
         else:
             flags.append({
                 "severity": "medium",
+                "brand": brand,
                 "title": f"Claims to be '{brand}' from an unofficial domain",
                 "detail": f"The page identifies itself as {brand}, but '{host}' is not one of {official}.",
             })
@@ -299,15 +301,33 @@ def parse_page(html: str, base_url: str) -> dict:
     }
 
 
+TEREDO = ipaddress.ip_network("2001::/32")
+
+
+def _is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    # Teredo (2001::/32) is a tunnelling range some resolvers hand out for public
+    # sites; it never reaches this machine's private network, so it is not blocked.
+    if ip.version == 6 and ip in TEREDO:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
+
+
 def _assert_public_host(host: str) -> None:
-    """SSRF guard: reject hosts that resolve to private/loopback/link-local space."""
+    """SSRF guard: reject a host if ANY address it resolves to is private,
+    loopback, link-local, reserved or multicast."""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("Raw-IP URLs are not accepted; use a hostname.")
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
         raise ValueError(f"Cannot resolve host '{host}'.") from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        if _is_blocked(ip):
             raise ValueError(
                 f"Host '{host}' resolves to a non-public address ({ip}); "
                 "fetching private network targets is not allowed."
@@ -319,22 +339,27 @@ def fetch_page(url: str, *, allow_private: bool = False) -> str:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("Provide a valid http(s) URL.")
+    hooks = {}
     if not allow_private:
-        host = parsed.hostname.strip("[]")
-        try:
-            ipaddress.ip_address(host)
-            raise ValueError("Raw-IP URLs are not accepted; use a hostname.")
-        except ValueError:
-            pass  # hostname, not an IP literal - DNS check below decides
-        _assert_public_host(host)
+        _assert_public_host(parsed.hostname.strip("[]"))
+
+        def check_hop(request: httpx.Request) -> None:
+            # every redirect hop is re-checked, not just the first URL
+            _assert_public_host(request.url.host.strip("[]"))
+
+        hooks = {"request": [check_hop]}
 
     with httpx.Client(
+        event_hooks=hooks,
         timeout=FETCH_TIMEOUT,
         follow_redirects=True,
         max_redirects=MAX_REDIRECTS,
         headers={"User-Agent": "PreflightBot/1.0 (security preflight; fetch-only, no JS)"},
     ) as client:
-        res = client.get(url)
+        try:
+            res = client.get(url)
+        except httpx.ConnectError:
+            res = client.get(url)  # one retry: TLS resets on flaky links are common
         res.raise_for_status()
         if len(res.content) > MAX_HTML_BYTES:
             raise ValueError("Page is over the 2 MB analysis limit.")

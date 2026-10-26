@@ -95,7 +95,7 @@ def test_parse_page_semantics():
 
 
 def test_fetch_page_blocks_loopback_by_default():
-    with pytest.raises(ValueError, match="not allowed"):
+    with pytest.raises(ValueError, match="Raw-IP|not allowed"):
         fetch_page("http://127.0.0.1:8000/static/demo/phish.html")
 
 
@@ -122,3 +122,41 @@ def test_vendor_site_mentioning_platforms_is_not_flagged():
     from app.webcheck import page_flags
     # official vendor page that also says "download for macOS / iOS"
     assert page_flags("desktop.github.com", _dl_page(), ["apple", "github"]) == []
+
+
+def test_raw_ip_url_is_rejected():
+    with pytest.raises(ValueError, match="Raw-IP"):
+        fetch_page("https://8.8.8.8/")
+
+
+def test_teredo_is_not_blocked_but_ula_is():
+    import ipaddress
+    from app.webcheck import _is_blocked
+    assert not _is_blocked(ipaddress.ip_address("2001::ae24:c4f2"))
+    assert _is_blocked(ipaddress.ip_address("fd00::1"))
+    assert _is_blocked(ipaddress.ip_address("10.0.0.5"))
+
+
+def test_redirect_to_private_host_is_refused(monkeypatch):
+    import httpx
+    from app import webcheck
+
+    def fake_assert(host):
+        if host == "internal.example":
+            raise ValueError("not allowed")
+
+    monkeypatch.setattr(webcheck, "_assert_public_host", fake_assert)
+
+    def handler(request):
+        if request.url.host == "public.example":
+            return httpx.Response(302, headers={"Location": "http://internal.example/admin"})
+        return httpx.Response(200, text="secret")
+
+    real_client = httpx.Client
+
+    def client_with_mock(**kw):
+        return real_client(transport=httpx.MockTransport(handler), **kw)
+
+    monkeypatch.setattr(webcheck.httpx, "Client", client_with_mock)
+    with pytest.raises(ValueError, match="not allowed"):
+        webcheck.fetch_page("http://public.example/")

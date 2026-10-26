@@ -99,7 +99,13 @@ ACTION_BLOCK = {
             "choice": "block",
             "probabilities": {"allow": 0.0024, "review": 0.0031, "block": 0.9945},
             "confidence": 0.9917,
-        }
+        },
+        "site_risk": {
+            "type": "choice",
+            "choice": "malicious_or_pirated",
+            "probabilities": {"malicious_or_pirated": 0.981, "legitimate": 0.019},
+            "confidence": 0.962,
+        },
     },
     "usage": {"input_tokens": 79, "output_tokens": 1},
 }
@@ -404,3 +410,12 @@ def test_confident_allow_and_block_are_unchanged():
     from app.scanner import _apply_band
     assert _apply_band({"choice": "allow", "probabilities": {}, "confidence": 0.9})["choice"] == "allow"
     assert _apply_band({"choice": "block", "probabilities": {}, "confidence": 0.3})["choice"] == "block"
+
+
+def test_scan_url_reports_malicious_probability_in_same_call(fake):
+    f = fake()
+    report = scan_url(URL_SUMMARY["url"], URL_SUMMARY)
+    final_questions = f.calls[-1][1]["questions"]
+    assert "action" in final_questions and "site_risk" in final_questions
+    assert report["risk"]["malicious_probability"] == 0.981
+    assert report["risk"]["choice"] == "malicious_or_pirated"

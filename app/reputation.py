@@ -24,6 +24,9 @@ from .webcheck import MULTI_LABEL_SUFFIXES
 
 LOOKUP_TIMEOUT = 8.0
 NEW_DOMAIN_DAYS = 90
+# a domain this popular and this old is treated as established
+ESTABLISHED_RANK = 100_000
+ESTABLISHED_DAYS = 3 * 365
 USER_AGENT = "PreflightBot/1.0 (https://github.com/miunerofrade/preflight; security preflight research)"
 CACHE_DIR = pathlib.Path(__file__).resolve().parent.parent / ".cache"
 TRANCO_FILE = CACHE_DIR / "tranco-top1m.csv"
@@ -43,9 +46,39 @@ WHOIS_DATE_PATTERNS = (
 )
 
 
+PSL_FILE = CACHE_DIR / "psl.dat"
+PSL_URL = "https://publicsuffix.org/list/public_suffix_list.dat"
+
+
+@functools.lru_cache(maxsize=1)
+def _public_suffixes() -> frozenset[str]:
+    """Public Suffix List (cached on disk). Includes hosting platforms such as
+    vercel.app or github.io, so 'x.vercel.app' is its own site, not vercel.app."""
+    try:
+        if not PSL_FILE.exists():
+            with _client() as c:
+                res = c.get(PSL_URL)
+            res.raise_for_status()
+            CACHE_DIR.mkdir(exist_ok=True)
+            PSL_FILE.write_text(res.text, encoding="utf-8")
+        rules = set()
+        for line in PSL_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip().lower()
+            if line and not line.startswith(("//", "!")):
+                rules.add(line[2:] if line.startswith("*.") else line)
+        return frozenset(rules)
+    except Exception:
+        return frozenset(MULTI_LABEL_SUFFIXES)
+
+
 def registrable_domain(host: str) -> str:
-    """'uuyc.163.com' -> '163.com', 'a.example.com.cn' -> 'example.com.cn'."""
+    """'uuyc.163.com' -> '163.com', 'a.example.com.cn' -> 'example.com.cn',
+    'fake.vercel.app' -> 'fake.vercel.app'."""
     labels = host.lower().rstrip(".").split(".")
+    suffixes = _public_suffixes()
+    for i in range(1, len(labels)):
+        if ".".join(labels[i:]) in suffixes:
+            return ".".join(labels[i - 1:])
     if len(labels) >= 3 and ".".join(labels[-2:]) in MULTI_LABEL_SUFFIXES:
         return ".".join(labels[-3:])
     return ".".join(labels[-2:])
@@ -212,6 +245,10 @@ def _owner_ids(claims: dict) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def _norm(name: str) -> str:
+    return re.sub(r"[\s\W_]+", "", name.lower())
+
+
 @functools.lru_cache(maxsize=256)
 def official_domains(name: str) -> dict:
     """Look up an organization or product by name; return its Wikidata id and official
@@ -227,6 +264,11 @@ def official_domains(name: str) -> dict:
                 "uselang": lang, "type": "item", "limit": 3, "format": "json",
             }).json().get("search", [])
             for hit in hits:
+                # search is fuzzy ("ToDesk" also finds "ToDesktop"); only an exact
+                # label/alias match counts as the same organization
+                matched = (hit.get("match") or {}).get("text") or hit.get("label") or ""
+                if _norm(matched) != _norm(cleaned):
+                    continue
                 claims = _claims(c, hit["id"])
                 domains = _websites(claims)
                 if domains:
@@ -269,6 +311,21 @@ def reputation(host: str, claimed_orgs: list[str], offers_download: bool) -> dic
 
     flags: list[dict] = []
     mismatched = [i for i in identity if i["matches"] is False]
+    if any(i["matches"] is True for i in identity):
+        # the host is official for one claimed name (product on its own domain,
+        # parent group listed elsewhere): the other names are not counter-evidence
+        mismatched = []
+    established = bool(rank and rank <= ESTABLISHED_RANK and (age["age_days"] or 0) >= ESTABLISHED_DAYS)
+    if established and mismatched:
+        names = ", ".join(i["claimed"] for i in mismatched)
+        flags.append({
+            "severity": "low",
+            "title": f"'{names}' does not list this domain",
+            "detail": f"Wikidata does not list '{domain}' for {names}, but the domain is "
+                      f"{age['age_days'] // 365} years old and ranks #{rank} worldwide. Large groups run "
+                      "many domains, so this is weak evidence on an established domain.",
+        })
+        mismatched = []
     for item in mismatched:
         sev = "high" if offers_download else "medium"
         what = "offers software downloads" if offers_download else "presents itself"

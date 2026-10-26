@@ -64,6 +64,17 @@ URL_QUESTIONS = {
 
 UNCERTAIN_ALLOW = 0.5
 
+SITE_RISK_QUESTION = {
+    "site_risk": {
+        "type": "choice",
+        "criteria": {
+            "malicious_or_pirated": "The site is a phishing page, a scam, an impersonation of another organization, or an unofficial / pirated mirror distributing someone else's software.",
+            "legitimate": "The site is operated by the organization it presents itself as, or makes no false identity claim and shows no malicious pattern.",
+        },
+    }
+}
+URL_VERDICT_QUESTIONS = {**ACTION_QUESTION, **SITE_RISK_QUESTION}
+
 
 def _apply_band(action: dict) -> dict:
     """An ALLOW the model itself is unsure about is shown as REVIEW; the model's own
@@ -361,7 +372,17 @@ def scan_url(url: str, summary: dict) -> dict[str, Any]:
     dl = page.get("download") or {}
     offers_download = bool(dl.get("cta_count") or dl.get("installer_links") or dl.get("script_targets"))
     rep = reputation(summary["host"], claimed_orgs, offers_download)
-    summary = {**summary, "flags": [*summary["flags"], *rep["flags"]]}
+    # A brand word somewhere on the page ("download for macOS", a LinkedIn link in
+    # structured data) is not an identity claim; keep brand-table flags only for
+    # brands that the extracted identity actually names.
+    named = " ".join(claimed_orgs).lower()
+    claimed_brands = [b for b in summary["brands_mentioned"] if b in named]
+    summary = {
+        **summary,
+        "brands_mentioned": claimed_brands,
+        "flags": [f for f in summary["flags"] if f.get("brand") in (None, *claimed_brands)] + rep["flags"],
+    }
+    report["url"]["brands_mentioned"] = claimed_brands
     report["url"]["flags"] = summary["flags"]
     report["url"]["claimed_identity"] = claimed_orgs
     report["layers"]["reputation"] = {k: rep.get(k) for k in ("domain", "age", "rank", "identity", "note")}
@@ -379,13 +400,22 @@ def scan_url(url: str, summary: dict) -> dict[str, Any]:
     guard_text = " ".join(
         x for x in (page["title"], " | ".join(page["headings"]), page["body_text"]) if x
     )
-    inj = tracked(client.injection(text=guard_text, evidence=True))
-    report["layers"]["injection"] = {
-        key: inj.get(key)
-        for key in ("injection", "verdict", "category", "categories",
-                    "severity", "severities", "evidence", "residual")
-    }
-    report["layers"]["injection"]["ms"] = ms_of(inj)
+    if guard_text.strip():
+        inj = tracked(client.injection(text=guard_text, evidence=True))
+        report["layers"]["injection"] = {
+            key: inj.get(key)
+            for key in ("injection", "verdict", "category", "categories",
+                        "severity", "severities", "evidence", "residual")
+        }
+        report["layers"]["injection"]["ms"] = ms_of(inj)
+    else:
+        # client-rendered pages ship an empty HTML shell; there is no text to scan
+        report["layers"]["injection"] = {"injection": 0.0, "verdict": "not_run", "category": None,
+                                         "categories": {}, "severity": "none", "severities": {},
+                                         "evidence": [], "residual": None, "ms": None}
+        report.setdefault("notes", []).append(
+            "The page has no readable text in its HTML (it is rendered by JavaScript), "
+            "so the prompt-injection scan was skipped.")
 
     # 3 - Inspect: static analysis of inline scripts (they are never executed)
     if page["script_blob"]:
@@ -418,13 +448,19 @@ def scan_url(url: str, summary: dict) -> dict[str, Any]:
     else:
         report["layers"]["identity"] = None
 
-    # 5 - final verdict
+    # 5 - final verdict + probability that the site is malicious / pirated (one call)
     verdict = tracked(client.decide(
         state=_url_verdict_state(summary, report["layers"]),
-        questions=ACTION_QUESTION,
+        questions=URL_VERDICT_QUESTIONS,
     ))
     action = verdict["answers"]["action"]
     report["action"] = _apply_band(action)
+    risk = verdict["answers"].get("site_risk") or {}
+    report["risk"] = {
+        "malicious_probability": (risk.get("probabilities") or {}).get("malicious_or_pirated"),
+        "choice": risk.get("choice"),
+        "confidence": risk.get("confidence"),
+    }
 
     report["total_ms"] = round((time.perf_counter() - started) * 1000)
     return report
