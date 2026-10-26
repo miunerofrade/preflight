@@ -115,6 +115,7 @@ function reportMarkdown(report, language = "en", reviewReport = null) {
     if (reason) item(L.reason, reason);
     if (h.changes?.removed) item(L.removed, h.changes.removed);
     if (h.changes?.masked) item(L.masked, h.changes.masked);
+    if (h.changes?.scripts_removed) lines.push(message("handoff.scriptRemoved"));
     if (h.verification) item(L.recheck, translate(h.verification.action.choice));
     if (h.status === "review") lines.push("", L.human);
     if (typeof h.text === "string") quote(h.text);

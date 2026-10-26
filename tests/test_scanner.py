@@ -333,6 +333,7 @@ def test_injection_evidence_reaches_report(fake):
 
 def test_usage_tokens_are_aggregated(fake):
     report = scan(TEXT)
+    assert report["usage"]["calls"] == 5
     assert report["usage"]["input_tokens"] == 50 + 40 + 30 + 60 + 79
     assert report["usage"]["output_tokens"] == 2 + 1 + 1 + 3 + 1
 

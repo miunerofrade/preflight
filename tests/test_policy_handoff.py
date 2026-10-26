@@ -183,10 +183,15 @@ def test_removing_injection_keeps_original_block_and_requires_human_review():
     assert result["status"] == "review" and result["text"] == "Keep this. [Instruction removed]"
 
 
-def test_script_risk_does_not_attempt_automatic_rewrite():
+def test_script_risk_replaces_the_whole_input_with_a_fixed_marker():
     value = report(script={"verdict": "malicious", "severity": "critical"}, code=True)
-    result = build_handoff("upload_credentials()", value, lambda _: pytest.fail("script cannot be rewritten"))
-    assert result["text"] is None and result["reason"] == "script_risk"
+    result = build_handoff("upload_credentials()", value, lambda _: pytest.fail("fixed replacement needs no model call"))
+    assert result["text"] == "[Script removed]" and result["status"] == "review"
+    assert result["changes"]["scripts_removed"] == 1
+    assert result["edits"][0]["before"] == "upload_credentials()"
+    assert result["edits"][0]["kind"] == "remove_script"
+    assert result["validation"] == {"method": "fixed_script_replacement", "retains_source_content": False}
+    assert value["action"]["choice"] == "block"
 
 
 def test_partial_recheck_usage_is_counted_when_next_call_times_out():

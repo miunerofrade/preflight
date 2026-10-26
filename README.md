@@ -37,8 +37,9 @@ paranoid step automatic — for **any** kind of agent input, not one vertical.
   content reworded (one campaign sent several times) and flags items that contradict each other.
 - **Prepared copy** — remove validated injection evidence and fully mask personal-data
   spans, then run the edited text through the complete scan again. Unchanged clean text
-  reuses its scan. Residual risks, invalid offsets and recheck failures withhold the copy;
-  instruction removal or a review verdict requires an explicit human acknowledgement.
+  reuses its scan. Risky script inputs are replaced in full with a fixed marker without
+  extra model calls. Residual risks, invalid offsets and recheck failures withhold other
+  edited copies; instruction/script removal or a review verdict requires confirmation.
 - **Review each edit** — open the prepared copy's comparison dialog to compare the exact
   original span with its replacement and see why it changed. The edit log preserves
   Unicode source/copy positions and is included in JSON and Markdown exports.
@@ -80,7 +81,10 @@ For text, `app/handoff.py` validates every edit against the original Unicode cod
 offsets, merges overlapping spans and constructs the copy in one pass. Injection
 instructions are removed; detected personal-data values are replaced in full with
 `[REDACTED]`. Names alone do not trigger masking or another scan; when contact/identity
-data is present, names are masked too. Risky scripts are withheld, not automatically rewritten. Any changed text
+data is present, names are masked too. An input classified as a risky script is replaced
+in full with the fixed `[Script removed]` marker, with the entire change shown in the
+edit comparison. No original code is retained or repaired, and copying requires confirmation.
+This fixed replacement is validated locally without extra model calls. Other edited text
 is scanned again with Guard, Protect, routing, conditional Inspect and Decide. A copy
 with remaining risks or personal data is withheld from handoff copying; its edited draft
 remains visible for inspection and manual revision. A copy whose injection was removed

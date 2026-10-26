@@ -7,6 +7,8 @@ from clocked_sdk import ClockedError
 
 from .policy import sensitive_pii
 
+SCRIPT_REPLACEMENT = "[Script removed]"
+
 
 def _span(text: str, item: dict, value_key: str) -> tuple[int, int]:
     start, end = item.get("start"), item.get("end")
@@ -21,7 +23,16 @@ def prepare_text(text: str, layers: dict, *, edits_out: list | None = None) -> t
 
     Overlapping spans are merged; a removal wins over masking. Any invalid source
     offset withholds the entire copy, rather than making a best-effort edit.
+    Risky script inputs are replaced in full by a fixed marker, so no evidence
+    offsets or original source content are used for that replacement.
     """
+    script = layers.get("script") or {}
+    if script.get("verdict") in {"malicious", "suspicious"}:
+        replacement = SCRIPT_REPLACEMENT
+        if edits_out is not None:
+            edits_out.append({"kind": "remove_script", "start": 0, "end": len(text), "before": text,
+                              "after": replacement, "copy_start": 0, "copy_end": len(replacement)})
+        return replacement, {"removed": 0, "masked": 0, "scripts_removed": 1}
     edits: list[tuple[int, int, str]] = []
     injection = layers["injection"]
     evidence = injection.get("evidence") or []
@@ -82,7 +93,15 @@ def build_handoff(text: str | None, report: dict, recheck: Callable[[str], dict]
         return {**result, "status": "unavailable", "reason": "file_source"}
     layers = report["layers"]
     script = layers.get("script")
-    if script and script.get("verdict") != "benign":
+    if script and script.get("verdict") in {"malicious", "suspicious"}:
+        candidate, changes = prepare_text(text, layers, edits_out=result["edits"])
+        # No source characters survive: this is a fixed non-executable marker,
+        # not an attempted repair of arbitrary source code or a model clearance.
+        assert candidate == SCRIPT_REPLACEMENT
+        return {**result, "status": "review", "text": candidate, "changes": changes,
+                "reason": "script_removed", "validation": {"method": "fixed_script_replacement",
+                                                            "retains_source_content": False}}
+    if script and script.get("verdict") not in {"benign", "malicious", "suspicious"}:
         return {**result, "reason": "script_risk"}
     if (report.get("routing") or {}).get("contains_code") and script is None:
         return {**result, "reason": "code_unchecked"}

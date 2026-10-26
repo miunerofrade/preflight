@@ -573,6 +573,7 @@ function renderHandoff(data) {
   const notes = [];
   if (changes.removed) notes.push(t("handoff.removedCount", { n: changes.removed }));
   if (changes.masked) notes.push(t("handoff.maskedCount", { n: changes.masked }));
+  if (changes.scripts_removed) notes.push(t("handoff.scriptRemoved"));
   if ((!canCopy && !hasDraft) || h.reason === "recheck_failed") notes.push(t(`handoff.reason.${h.reason}`));
   $("handoff-note").textContent = notes.join(LANG === "zh" ? "，" : "; ");
   $("handoff-note").hidden = !notes.length;
@@ -583,7 +584,7 @@ function renderHandoff(data) {
   }
   $("handoff-confirm").hidden = !(canCopy && h.status === "review");
   $("copy").disabled = !canCopy || h.status !== "ready";
-  $("handoff-diff").hidden = !h.edits?.length && !(changes.removed || changes.masked);
+  $("handoff-diff").hidden = !h.edits?.length && !(changes.removed || changes.masked || changes.scripts_removed);
   $("handoff-diff-label").disabled = !h.edits?.length;
   if (h.edits?.length) {
     $("handoff-diff-label").textContent = t("diff.show", { n: h.edits.length });

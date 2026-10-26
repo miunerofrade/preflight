@@ -11,7 +11,7 @@ outcome and full report. API keys and authorization headers are never recorded.
 | private-ticket | review / review | ready | review | 8 | 14 |
 | hidden-instruction | block / block | review | review | 8 | 13 |
 | hidden-instruction-zh | block / block | review | review | 8 | 13 |
-| credential-script | block / block | withheld | withheld | 5 | 11 |
+| credential-script | block / block | review | review | 5 | 11 |
 | ordinary-script | allow / allow | ready | ready | 5 | 9 |
 | quoted-security-guide | allow / allow | ready | ready | 4 | 6 |
 | Total | 7 / 7 original dispositions matched | | 6 / 7 complete outcomes matched | 42 | 72 |
@@ -20,6 +20,12 @@ The private ticket has no remaining personal-data entities after masking. The fi
 Decide still recommends review, so its copy requires human acknowledgement. This is
 kept as an observed deviation from the original expectation of an immediately ready
 copy. Tests assert the recorded behavior, not an invented successful outcome.
+
+The credential script's original five request/response bodies are unchanged. Its handoff
+now replaces the entire input with the fixed `[Script removed]` marker and requires
+confirmation, without another model call. The previous withheld outcome is preserved in
+`initial/credential-script.json`; the top-level report and expected handoff reflect the
+current deterministic replacement behavior.
 
 ## A real failure that changed the implementation
 
