@@ -265,7 +265,7 @@ function render(data, text) {
   word.textContent = action.choice.toUpperCase();
   word.className = `verdict-word verdict-${action.choice}`;
   $("verdict-conf").textContent =
-    `Confidence ${(action.confidence * 100).toFixed(1)}% · decided by Clocked decide`;
+    `Confidence ${(action.confidence * 100).toFixed(1)}% · decided by Clocked decide` + (action.uncertain ? ` · model said ${String(action.model_choice).toUpperCase()} but is unsure, shown as REVIEW` : "");
   updateGauge(action.confidence, action.choice);
   $("verdict-probs").innerHTML = Object.entries(action.probabilities)
     .sort((a, b) => b[1] - a[1])
@@ -443,7 +443,7 @@ function renderUrl(data) {
   word.textContent = action.choice.toUpperCase();
   word.className = `verdict-word verdict-${action.choice}`;
   $("verdict-conf").textContent =
-    `Confidence ${(action.confidence * 100).toFixed(1)}% · decided by Clocked decide`;
+    `Confidence ${(action.confidence * 100).toFixed(1)}% · decided by Clocked decide` + (action.uncertain ? ` · model said ${String(action.model_choice).toUpperCase()} but is unsure, shown as REVIEW` : "");
   updateGauge(action.confidence, action.choice);
   $("verdict-probs").innerHTML = Object.entries(action.probabilities)
     .sort((a, b) => b[1] - a[1])

@@ -14,6 +14,13 @@ from typing import Any
 
 from clocked_sdk import Clocked
 
+from .reputation import reputation
+
+IDENTITY_FIELDS = {
+    "organization": "The company or organization the site says it belongs to or that makes the product (e.g. the publisher or vendor named in the title, description, copyright or structured data).",
+    "product": "The product or service name the site is presenting.",
+}
+
 CODE_QUESTION = {
     "contains_executable_code": {
         "type": "choice",
@@ -54,6 +61,25 @@ URL_QUESTIONS = {
         },
     },
 }
+
+UNCERTAIN_ALLOW = 0.5
+
+
+def _apply_band(action: dict) -> dict:
+    """An ALLOW the model itself is unsure about is shown as REVIEW; the model's own
+    choice is kept so the report never hides what Clocked actually said."""
+    out = {
+        "choice": action["choice"],
+        "probabilities": action["probabilities"],
+        "confidence": action["confidence"],
+        "model_choice": action["choice"],
+        "uncertain": False,
+    }
+    if action["choice"] == "allow" and action["confidence"] < UNCERTAIN_ALLOW:
+        out["choice"] = "review"
+        out["uncertain"] = True
+    return out
+
 
 SEV_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -192,11 +218,7 @@ def scan(
         questions=ACTION_QUESTION,
     ))
     action = verdict["answers"]["action"]
-    report["action"] = {
-        "choice": action["choice"],
-        "probabilities": action["probabilities"],
-        "confidence": action["confidence"],
-    }
+    report["action"] = _apply_band(action)
 
     report["total_ms"] = round((time.perf_counter() - started) * 1000)
     return report
@@ -251,10 +273,40 @@ def _url_verdict_state(summary: dict, layers: dict) -> str:
         lines.append(f"Script scan: malicious {scr['malicious']:.3f}, verdict {scr['verdict']}, severity {scr['severity']}.")
     else:
         lines.append("Script scan: not run (no inline scripts found).")
+    rep = layers.get("reputation") or {}
+    age = rep.get("age") or {}
+    if age.get("created"):
+        lines.append(f"Domain registered: {age['created']} ({age['age_days']} days ago).")
+    else:
+        lines.append("Domain registration date: unknown.")
+    if rep.get("rank"):
+        lines.append(f"Tranco global popularity rank: {rep['rank']}.")
+    for item in rep.get("identity") or []:
+        if item.get("matches") is True:
+            lines.append(f"Claimed identity '{item['claimed']}': the host is on its official domains "
+                         f"({', '.join(item['domains'])}).")
+        elif item.get("matches") is False:
+            lines.append(f"Claimed identity '{item['claimed']}': the host is NOT on its official domains "
+                         f"({', '.join(item['domains'])}).")
     if ident:
-        lines.append(f"Identity grounding: {ident.get('verdict') or ident.get('grounded') or 'returned'} "
-                     f"for the brand the page claims to represent.")
+        lines.append(f"Identity grounding against public registry records: "
+                     f"{ident.get('verdict') or 'returned'}.")
     return "\n".join(lines)
+
+
+def _identity_reference(host: str, rep: dict) -> str:
+    """Public facts about who owns what - the reference the identity claim is checked against."""
+    lines = []
+    for item in rep.get("identity") or []:
+        if item.get("domains"):
+            lines.append(f"Wikidata {item.get('entity')} ('{item.get('label') or item['claimed']}') lists its "
+                         f"official websites on: {', '.join(item['domains'])}.")
+    domain = rep.get("domain") or host
+    lines.append(f"The host {host} belongs to the registrable domain {domain}.")
+    age = rep.get("age") or {}
+    if age.get("created"):
+        lines.append(f"{domain} was registered on {age['created']}.")
+    return " ".join(lines)
 
 
 def scan_url(url: str, summary: dict) -> dict[str, Any]:
@@ -291,6 +343,29 @@ def scan_url(url: str, summary: dict) -> dict[str, Any]:
     def ms_of(res: dict) -> int | None:
         return (res.get("timing") or {}).get("total_ms")
 
+    # 0 - who does the page claim to be? (Clocked extract, any language, no brand list)
+    identity_text = " | ".join(
+        x for x in (page["title"], page.get("description", ""), " | ".join(page["headings"]),
+                    page.get("claims_text", "")) if x
+    )
+    claimed_orgs: list[str] = []
+    if identity_text:
+        ext = tracked(client.extract(text=identity_text[:4000], fields=IDENTITY_FIELDS))
+        fields = ext.get("fields") or {}
+        claimed_orgs = [
+            (fields.get(k) or {}).get("value") or ""
+            for k in ("organization", "product")
+            if (fields.get(k) or {}).get("confidence", 0) >= 0.5
+        ]
+        claimed_orgs = [o for o in claimed_orgs if o]
+    dl = page.get("download") or {}
+    offers_download = bool(dl.get("cta_count") or dl.get("installer_links") or dl.get("script_targets"))
+    rep = reputation(summary["host"], claimed_orgs, offers_download)
+    summary = {**summary, "flags": [*summary["flags"], *rep["flags"]]}
+    report["url"]["flags"] = summary["flags"]
+    report["url"]["claimed_identity"] = claimed_orgs
+    report["layers"]["reputation"] = {k: rep.get(k) for k in ("domain", "age", "rank", "identity", "note")}
+
     state = _url_state_text(summary)
 
     # 1 - dual-question Decide: brand impersonation + content intent
@@ -325,12 +400,13 @@ def scan_url(url: str, summary: dict) -> dict[str, Any]:
         report["layers"]["script"] = None
 
     # 4 - identity grounding: does the brand claim survive scrutiny?
-    if summary["brands_mentioned"]:
-        brands = ", ".join(summary["brands_mentioned"])
+    claimed_all = list(dict.fromkeys([*claimed_orgs, *summary["brands_mentioned"]]))
+    if claimed_all:
+        brands = ", ".join(claimed_all)
         g = tracked(client.grounding(
-            documents=[guard_text],
+            documents=[_identity_reference(summary["host"], rep)],
             question="Is this website an official property of the brand it claims to represent?",
-            answer=f"The page presents itself as {brands}; the actual domain serving it is {summary['host']}.",
+            answer=f"The website at {summary['host']} is an official website of {brands}.",
             evidence="all",
         ))
         report["layers"]["identity"] = {
@@ -348,11 +424,7 @@ def scan_url(url: str, summary: dict) -> dict[str, Any]:
         questions=ACTION_QUESTION,
     ))
     action = verdict["answers"]["action"]
-    report["action"] = {
-        "choice": action["choice"],
-        "probabilities": action["probabilities"],
-        "confidence": action["confidence"],
-    }
+    report["action"] = _apply_band(action)
 
     report["total_ms"] = round((time.perf_counter() - started) * 1000)
     return report

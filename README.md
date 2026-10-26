@@ -47,19 +47,37 @@ scans say so explicitly instead of pretending.
 
 ### URL scans (link preflight)
 
-The page is fetched without executing its JS, parsed into a semantic summary (title,
-headings, forms + field types, link text→href pairs, inline script sources), and enriched
-with deterministic checks (homoglyph normalization + Levenshtein against a brand-domain
-table, commonly-abused TLDs, punycode, raw-IP hosts, missing HTTPS). Then, worst case five
-calls covering **all three Clocked capability groups**:
+The page is fetched without executing its JS and parsed into a semantic summary (title,
+description, headings, JSON-LD structured data, forms + field types, link text→href pairs,
+download buttons, inline script sources). No brand list is needed to judge it:
+
+- **Who does the page claim to be?** Clocked `extract` pulls the claimed organization and
+  product from the title, description and structured data, in any language.
+- **Where does that identity really live?** The claimed name is looked up on Wikidata
+  ("official website", falling back to the developer / owner when a product lists none).
+- **How trustworthy is the domain?** Registration date via RDAP (WHOIS port 43 for TLDs
+  without RDAP, such as `.cn`), and popularity via the Tranco top-1M list (cached locally).
+- Small deterministic checks stay: punycode, raw-IP hosts, missing HTTPS, download targets
+  hidden in script variables.
+
+Then up to six calls covering **all three Clocked capability groups**:
 
 | # | Layer | Endpoint | What it decides |
 |---|-------|----------|-----------------|
-| 1 | Impersonation + intent | `decide` (dual question) | Brand impersonation vs legitimate; credential harvesting vs scam vs benign — with probabilities. |
+| 0 | Claimed identity | `extract` | Organization / product the page presents itself as, with character offsets. |
+| 1 | Impersonation + intent | `decide` (dual question) | Impersonation vs legitimate; credential harvesting vs scam vs benign. |
 | 2 | Guard | `injection` | Prompt injection aimed at agents reading the page. |
-| 3 | Inspect | `script` (conditional) | Inline scripts are statically analyzed — caught exfiltration to a foreign host at 0.986 on the demo page. |
-| 4 | Identity | `grounding` (conditional) | "This page claims to be PayPal, served from an unrelated domain" → ungrounded. |
-| 5 | Verdict | `decide` | allow / review / block from the full picture. |
+| 3 | Inspect | `script` (conditional) | Static analysis of inline scripts (never executed). |
+| 4 | Identity | `grounding` (conditional) | Checks "this site is an official property of X" against the public record (Wikidata domains, registration date, rank). |
+| 5 | Verdict | `decide` | allow / review / block. An `allow` below 0.5 confidence is shown as **review**, with the model's own choice kept in the report. |
+
+Lookups fail soft: an unreachable registry or Wikidata yields "unknown", never a risk signal.
+**Data flow note:** URL scans send the scanned domain to IANA/RDAP or WHOIS registries,
+Wikidata and (once) Tranco, in addition to Clocked.
+
+Field test (Oct 26, 2026, real APIs): five fake Chinese download mirrors (UU远程 ×2, 腾讯会议,
+钉钉, 夸克网盘) were all blocked at 0.95–0.99, and the official `y.qq.com` download page was
+allowed at 0.99 — with no Chinese brand in any table.
 
 SSRF-safe by construction: private/loopback/link-local targets are refused unless
 `PREFLIGHT_ALLOW_PRIVATE_URLS=1` (used only to scan the bundled synthetic demo page at
@@ -98,6 +116,7 @@ deterministic URL checks, and SSRF refusal.
 | Text scan with code (5 layers) | 5 | 259 in / 5 out | ~2.4 s |
 | PDF scan, 1 page (4 layers) | 4 | 93 in / 5 out | ~2.2 s |
 | URL scan, synthetic phishing page (5 layers) | 5 | 424 in / 10 out | ~3.0 s |
+| URL scan, real site with reputation lookups (6 layers) | 6 | ~1,500 in / 10 out | 3–7 s (first scan +10 s to load Tranco) |
 | Batch of 2 | 8–9 | ~500 in | ~4 s |
 
 A full development cycle fits comfortably inside the 20,000 challenge credits.
@@ -109,6 +128,10 @@ A full development cycle fits comfortably inside the 20,000 challenge credits.
   scope; Preflight judges content semantics, not business-logic truth.
 - Script inspection requires pasted code text; PDFs with embedded scripts get the verdict
   from the other layers and an explicit note instead of a pretend result.
+- URL reputation is evidence, not proof: a new, unranked domain can be a legitimate new
+  site, and Wikidata does not know every product (e.g. 夸克网盘); then the verdict rests on the
+  other layers. A fake download source is flagged, but the installer itself is never fetched
+  or analyzed.
 - Batch is capped at 10 items and 20,000 characters each; this is a preflight gate, not a
   streaming pipeline.
 

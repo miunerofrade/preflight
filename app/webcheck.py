@@ -4,6 +4,7 @@ executed, so analyzing a hostile page is safe."""
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 import urllib.parse
 
@@ -40,6 +41,15 @@ BRAND_DOMAINS = {
     "usps": ["usps.com"],
 }
 
+# Public suffixes with two labels, so "uuycpro.com.cn" splits as ("uuycpro", "com.cn").
+MULTI_LABEL_SUFFIXES = {
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "co.uk", "org.uk",
+    "com.hk", "com.tw", "co.jp", "com.au", "co.kr", "com.br",
+}
+
+INSTALLER_EXTENSIONS = (".exe", ".msi", ".dmg", ".pkg", ".apk", ".deb", ".rpm", ".appimage")
+DOWNLOAD_WORDS = ("下载", "download", "安装包", "installer")
+
 SUSPICIOUS_TLDS = {
     "xyz", "top", "club", "online", "site", "icu", "cfd", "click", "live",
     "rest", "buzz", "surf", "monster", "quest", "sbs", "cam",
@@ -69,11 +79,19 @@ def levenshtein(a: str, b: str, cap: int = 3) -> int:
 
 
 def _registrable_parts(host: str) -> tuple[str, str]:
-    """Return (root_label, tld) with a dumb-but-deterministic two-label split."""
+    """Return (root_label, suffix), aware of two-label suffixes like com.cn."""
     labels = host.split(".")
+    if len(labels) >= 3 and ".".join(labels[-2:]) in MULTI_LABEL_SUFFIXES:
+        return labels[-3], ".".join(labels[-2:])
     if len(labels) >= 2:
         return labels[-2], labels[-1]
     return host, ""
+
+
+def is_official(host: str, brand: str) -> bool:
+    """True when host is one of the brand's domains or a subdomain of any of them."""
+    host = host.lower().rstrip(".")
+    return any(host == d or host.endswith("." + d) for d in BRAND_DOMAINS.get(brand, []))
 
 
 def url_flags(url: str) -> list[dict]:
@@ -105,14 +123,17 @@ def url_flags(url: str) -> list[dict]:
     # brand containment / lookalike distance
     matched_brand = None
     for brand, official in BRAND_DOMAINS.items():
-        if host in official or host.endswith("." + official[0]):
+        if is_official(host, brand):
             matched_brand = (brand, official, "official")
             break
     if matched_brand is None:
         for brand, official in BRAND_DOMAINS.items():
+            # short keys ("ups", "dhl") would match inside ordinary words like "groups"
+            if len(brand) < 4:
+                continue
             norm_brand = brand.translate(HOMOGLYPHS)
             inside = norm_brand in tld_root or brand in host
-            close = levenshtein(tld_root, brand, cap=2) <= 2
+            close = len(brand) >= 5 and levenshtein(tld_root, brand, cap=2) <= 2
             if inside or close:
                 matched_brand = (brand, official, "lookalike")
                 flags.append({
@@ -133,7 +154,64 @@ def url_flags(url: str) -> list[dict]:
 def brand_mentions(text: str) -> list[str]:
     """Which known brands does the page text claim to be? (title/headings are preferred input)"""
     lowered = text.lower()
-    return [brand for brand in BRAND_DOMAINS if brand in lowered]
+    return [brand for brand in BRAND_DOMAINS if len(brand) >= 4 and brand in lowered]
+
+
+def _host_of(url: str, base_url: str) -> str:
+    return (urllib.parse.urlsplit(urllib.parse.urljoin(base_url, url)).hostname or "").lower()
+
+
+def page_flags(host: str, page: dict, claimed: list[str]) -> list[dict]:
+    """Checks that need the page: brand claims from a foreign domain, and
+    downloads offered for a brand's software from outside that brand's domains."""
+    flags: list[dict] = []
+    own = [b for b in claimed if is_official(host, b)]
+    if own:
+        # On a vendor's own domain, other brand names are platforms or partners
+        # ("download for macOS"), not identity claims.
+        claimed = own
+    unofficial = [b for b in claimed if not is_official(host, b)]
+    dl = page.get("download") or {}
+    offers_download = bool(dl.get("cta_count") or dl.get("installer_links") or dl.get("script_targets"))
+
+    for brand in unofficial:
+        official = ", ".join(BRAND_DOMAINS[brand])
+        if offers_download:
+            flags.append({
+                "severity": "high",
+                "title": f"Unofficial download source for '{brand}' software",
+                "detail": f"The page attributes its software to {brand} and offers "
+                          f"{dl.get('cta_count', 0)} download action(s), but '{host}' is not one of the "
+                          f"official domains ({official}). Repackaged installers on lookalike mirrors are a "
+                          "common malware vector; download only from the vendor's own domain.",
+            })
+        else:
+            flags.append({
+                "severity": "medium",
+                "title": f"Claims to be '{brand}' from an unofficial domain",
+                "detail": f"The page identifies itself as {brand}, but '{host}' is not one of {official}.",
+            })
+
+    for target in dl.get("script_targets", []):
+        target_host = _host_of(target, page.get("base_url", ""))
+        foreign = any(not is_official(target_host, b) for b in claimed) if claimed else False
+        flags.append({
+            "severity": "medium" if foreign else "low",
+            "title": "Download destination is set by script",
+            "detail": f"The download buttons have no visible link; a script variable sends them to "
+                      f"'{target}'. The destination can be swapped server-side at any time and is "
+                      "invisible to someone hovering the button.",
+        })
+
+    for link in dl.get("installer_links", []):
+        link_host = _host_of(link, page.get("base_url", ""))
+        if claimed and all(not is_official(link_host, b) for b in claimed):
+            flags.append({
+                "severity": "high",
+                "title": "Installer hosted outside the vendor's domains",
+                "detail": f"Direct installer link '{link}' is served from '{link_host}'.",
+            })
+    return flags
 
 
 def parse_page(html: str, base_url: str) -> dict:
@@ -170,13 +248,32 @@ def parse_page(html: str, base_url: str) -> dict:
             links.append({"text": text, "href": href})
     links = links[:20]
 
+    # structured data often states who the site claims to be ("网易出品")
+    claims_text = []
     inline_scripts = []
     for s in soup.find_all("script"):
         if s.get("src"):
             continue
         code = (s.string or "").strip()
-        if code:
-            inline_scripts.append(code)
+        if not code:
+            continue
+        if (s.get("type") or "").lower() == "application/ld+json":
+            claims_text.append(code[:2000])
+        inline_scripts.append(code)
+
+    installer_links = []
+    cta_count = 0
+    for a in soup.find_all(["a", "button"]):
+        href = a.get("href") or ""
+        label = " ".join(a.get_text(" ", strip=True).split()).lower()
+        if href.lower().split("?")[0].endswith(INSTALLER_EXTENSIONS):
+            installer_links.append(href)
+        if a.has_attr("data-dl") or any(w in label for w in DOWNLOAD_WORDS):
+            cta_count += 1
+    script_targets = re.findall(
+        r"""(?:download_?url|dl_?url)\s*[=:]\s*["']([^"']+)["']""",
+        "\n".join(inline_scripts), flags=re.IGNORECASE,
+    )
     script_blob = "\n\n".join(inline_scripts)[:8000]
     script_srcs = [s["src"] for s in soup.find_all("script", src=True, limit=10)]
 
@@ -193,6 +290,12 @@ def parse_page(html: str, base_url: str) -> dict:
         "script_blob": script_blob,
         "body_text": body_text,
         "base_url": base_url,
+        "claims_text": " ".join(claims_text)[:3000],
+        "download": {
+            "cta_count": cta_count,
+            "installer_links": installer_links[:10],
+            "script_targets": list(dict.fromkeys(script_targets))[:5],
+        },
     }
 
 
@@ -244,11 +347,12 @@ def summarize_url(url: str, *, allow_private: bool = False) -> dict:
     parsed = urllib.parse.urlsplit(url)
     host = (parsed.hostname or "").lower()
     page = parse_page(page_html, url)
+    claimed = brand_mentions(" ".join([page["title"], page["description"], *page["headings"], page["claims_text"]]))
     return {
         "url": url,
         "host": host,
         "page": page,
-        "flags": url_flags(url),
-        "brands_mentioned": brand_mentions(" ".join([page["title"], *page["headings"]])),
+        "flags": url_flags(url) + page_flags(host, page, claimed),
+        "brands_mentioned": claimed,
         "has_password_form": any(f["asks_password"] for f in page["forms"]),
     }

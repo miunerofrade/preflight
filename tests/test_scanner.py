@@ -212,12 +212,31 @@ class FakeClocked:
         self.calls.append(("grounding", kw))
         return copy.deepcopy(GROUNDING)
 
+    def extract(self, **kw):
+        self.calls.append(("extract", kw))
+        return copy.deepcopy(EXTRACT)
+
+
+EXTRACT = {
+    "fields": {
+        "organization": {"value": "PayPal", "start": 0, "end": 6, "confidence": 0.99},
+        "product": {"value": "PayPal Security Center", "start": 0, "end": 22, "confidence": 0.98},
+    },
+    "usage": {"input_tokens": 20, "output_tokens": 2},
+}
+
+FAKE_REP = {
+    "domain": "127.0.0.1", "age": None, "rank": None, "identity": [], "flags": [],
+    "note": "Local or reserved host: reputation lookups skipped.",
+}
+
 
 @pytest.fixture
 def fake():
     def _install(**kwargs) -> FakeClocked:
         f = FakeClocked(**kwargs)
         scanner_mod.Clocked = lambda: f  # type: ignore[assignment]
+        scanner_mod.reputation = lambda host, orgs, dl: {**copy.deepcopy(FAKE_REP), "seen": (host, orgs, dl)}
         return f
 
     return _install
@@ -309,8 +328,8 @@ def test_scan_url_runs_full_pipeline(fake):
     f = fake()
     report = scan_url(URL_SUMMARY["url"], URL_SUMMARY)
     kinds = [name for name, _ in f.calls]
-    assert kinds == ["decide", "injection", "script", "grounding", "decide"]
-    assert report["usage"]["calls"] == 5
+    assert kinds == ["extract", "decide", "injection", "script", "grounding", "decide"]
+    assert report["usage"]["calls"] == 6
     assert report["source"]["kind"] == "url"
     assert report["layers"]["impersonation"]["brand"]["choice"] == "impersonation"
     assert report["layers"]["impersonation"]["intent"]["choice"] == "credential_harvesting"
@@ -321,7 +340,7 @@ def test_scan_url_runs_full_pipeline(fake):
 def test_scan_url_first_decide_covers_both_questions(fake):
     f = fake()
     scan_url(URL_SUMMARY["url"], URL_SUMMARY)
-    questions = f.calls[0][1]["questions"]
+    questions = f.calls[1][1]["questions"]
     assert "brand_impersonation" in questions and "content_intent" in questions
 
 
@@ -331,6 +350,8 @@ def test_scan_url_skips_script_and_grounding_when_absent(fake):
     summary["page"]["script_blob"] = ""
     summary["page"]["inline_script_count"] = 0
     summary["brands_mentioned"] = []
+    summary["page"]["title"] = ""
+    summary["page"]["headings"] = []
     report = scan_url(summary["url"], summary)
     kinds = [name for name, _ in f.calls]
     assert kinds == ["decide", "injection", "decide"]
@@ -350,5 +371,36 @@ def test_url_verdict_state_carries_flags_and_form(fake):
 def test_url_guard_text_uses_visible_page_content(fake):
     f = fake()
     scan_url(URL_SUMMARY["url"], URL_SUMMARY)
-    guard_kwargs = f.calls[1][1]
+    guard_kwargs = f.calls[2][1]
     assert "LIMITED" in guard_kwargs["text"]
+
+
+def test_scan_url_extracts_claimed_identity_and_passes_it_to_reputation(fake, monkeypatch):
+    seen = {}
+
+    def fake_rep(host, orgs, dl):
+        seen.update(host=host, orgs=orgs, dl=dl)
+        return {"domain": "fake.example", "age": {"created": "2026-09-14", "age_days": 42, "source": "whois"},
+                "rank": None, "identity": [],
+                "flags": [{"severity": "medium", "title": "Newly registered domain (42 days old)", "detail": "x"}]}
+
+    fake()
+    monkeypatch.setattr(scanner_mod, "reputation", fake_rep)
+    report = scan_url(URL_SUMMARY["url"], URL_SUMMARY)
+    assert seen["orgs"] == ["PayPal", "PayPal Security Center"]
+    assert report["url"]["claimed_identity"] == ["PayPal", "PayPal Security Center"]
+    assert any("Newly registered" in f["title"] for f in report["url"]["flags"])
+    assert report["layers"]["reputation"]["age"]["age_days"] == 42
+
+
+def test_uncertain_allow_is_shown_as_review():
+    from app.scanner import _apply_band
+    out = _apply_band({"choice": "allow", "probabilities": {"allow": 0.6, "review": 0.37, "block": 0.03},
+                       "confidence": 0.41})
+    assert out["choice"] == "review" and out["model_choice"] == "allow" and out["uncertain"]
+
+
+def test_confident_allow_and_block_are_unchanged():
+    from app.scanner import _apply_band
+    assert _apply_band({"choice": "allow", "probabilities": {}, "confidence": 0.9})["choice"] == "allow"
+    assert _apply_band({"choice": "block", "probabilities": {}, "confidence": 0.3})["choice"] == "block"

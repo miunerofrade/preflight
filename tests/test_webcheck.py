@@ -102,3 +102,23 @@ def test_fetch_page_blocks_loopback_by_default():
 def test_fetch_page_rejects_non_http():
     with pytest.raises(ValueError):
         fetch_page("ftp://example.com/x")
+
+
+def _dl_page(script_targets=(), cta=3):
+    return {"base_url": "https://example.test/",
+            "download": {"cta_count": cta, "installer_links": [], "script_targets": list(script_targets)}}
+
+
+def test_unofficial_download_source_is_flagged():
+    from app.webcheck import page_flags
+    flags = page_flags("github-desktop.example", _dl_page(["https://github-desktop.example/"]), ["github"])
+    titles = [f["title"] for f in flags]
+    assert any("Unofficial download source" in t for t in titles)
+    assert any("set by script" in t for t in titles)
+    assert flags[0]["severity"] == "high"
+
+
+def test_vendor_site_mentioning_platforms_is_not_flagged():
+    from app.webcheck import page_flags
+    # official vendor page that also says "download for macOS / iOS"
+    assert page_flags("desktop.github.com", _dl_page(), ["apple", "github"]) == []
