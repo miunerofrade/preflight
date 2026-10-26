@@ -80,3 +80,30 @@ def test_valid_citations_survive():
     result = generate_review(sample(), "en", _client=Client())
     assert result["field_sources"]["review_steps"] == "generated"
     assert result["generated"]["review_steps"] == "Re-check finding [1] before forwarding."
+
+
+def test_zero_citation_falls_back_to_the_template():
+    class Client:
+        def fill(self, **_):
+            return {"fields": {"title": {"value": "T"}, "summary": {"value": "S"},
+                               "review_steps": {"value": "Check [0] now."}},
+                    "usage": {"input_tokens": 5}}
+
+    result = generate_review(sample(), "en", _client=Client())
+    assert result["field_sources"]["review_steps"] == "template"
+
+
+def test_findings_keep_offsets_and_flag_positions():
+    facts = generate_review.__wrapped__ if False else None
+    from app.reports import review_facts
+    report = {"source": {"kind": "url"},
+              "action": {"choice": "review"},
+              "layers": {"injection": {"verdict": "injection",
+                                       "evidence": [{"quote": "Ignore instructions", "start": 4, "end": 22}]}},
+              "url": {"flags": [{"title": "Lookalike brand"}, {"title": ""}]}}
+
+    facts = review_facts(report)
+    assert facts["findings"] == [
+        {"index": 1, "kind": "injection", "quote": "Ignore instructions", "start": 4, "end": 22},
+        {"index": 2, "kind": "url_flag", "title": "Lookalike brand", "flag_index": 1},
+    ]

@@ -1021,8 +1021,8 @@ function renderUrl(data) {
   }
 
   const u = data.url || {};
-  const flags = (u.flags || []).map(f => localizedFlag(f)).map((f) =>
-    `<details class="flag"><summary><span class="chip ${FLAG_CHIP[f.severity] || "chip-neutral"}">${esc(sevLabel(f.severity))}</span>
+  const flags = (u.flags || []).map(f => localizedFlag(f)).map((f, i) =>
+    `<details class="flag" data-flag-index="${i + 1}"><summary><span class="chip ${FLAG_CHIP[f.severity] || "chip-neutral"}">${esc(sevLabel(f.severity))}</span>
        <strong class="flag-title">${esc(f.title)}</strong></summary>
        <p class="flag-detail">${esc(f.detail)}</p></details>`).join("")
     || "";
@@ -1344,6 +1344,39 @@ $("agent-abandon").addEventListener("click", async () => {
     showError(err.message);
   }
 });
+
+// a Fill suggestion may cite a numbered finding: clicking it closes the dialog and
+// takes the reviewer to that exact evidence - a specific URL flag, a highlighted
+// span in the annotated source, or at least the right panel
+$("detail-dialog").addEventListener("click", (event) => {
+  const ref = event.target.closest(".step-ref");
+  if (!ref) return;
+  const finding = (currentReview()?.facts?.findings || []).find((x) => x.index === Number(ref.dataset.index));
+  if (!finding) return;
+  closeDetail();
+  if (finding.kind === "url_flag" && Number.isInteger(finding.flag_index)) {
+    const flag = document.querySelector(`[data-flag-index="${finding.flag_index}"]`);
+    if (flag) { flag.open = true; scrollFlash(flag); return; }
+    openDetail("evidence");
+    return;
+  }
+  if (!$("source").closest(".panel").hidden) {
+    const quote = String(finding.quote || "").trim();
+    const mark = quote
+      ? [...document.querySelectorAll("#source mark")].find(m => m.textContent.trim() === quote)
+      : null;
+    if (mark) { scrollFlash(mark); return; }
+  }
+  const panel = $("source").closest(".panel");
+  if (panel.hidden) return;  // nothing locatable: the tooltip carried the evidence text
+  scrollFlash(panel);
+});
+
+function scrollFlash(el) {
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.remove("locate-flash");
+  requestAnimationFrame(() => el.classList.add("locate-flash"));
+}
 // a failed attempt retries in place by replaying the exact request that failed;
 // it reruns the scan, it does not resume from the last completed stage
 $("error-retry").addEventListener("click", () => {

@@ -23,20 +23,23 @@ def review_facts(report: dict) -> dict:
     url = report.get("url") or {}
     injection = layers.get("injection") or {}
     script = layers.get("script") or {}
-    # numbered findings let the generated steps cite specific evidence, e.g. "[2]"
+    # numbered findings let the generated steps cite specific evidence, e.g. "[2]";
+    # text evidence keeps its offsets so a citation can scroll to the exact span
     findings: list[dict[str, Any]] = []
     for item in (injection.get("evidence") or [])[:5]:
         quote = str(item.get("quote") or item.get("text") or "").strip()
         if quote:
-            findings.append({"kind": "injection", "quote": quote[:160]})
+            findings.append({"kind": "injection", "quote": quote[:160],
+                             "start": item.get("start"), "end": item.get("end")})
     for item in (script.get("evidence") or [])[:5]:
         quote = str(item.get("quote") or item.get("text") or "").strip()
         if quote:
-            findings.append({"kind": "script", "quote": quote[:160]})
-    for flag in (url.get("flags") or [])[:5]:
+            findings.append({"kind": "script", "quote": quote[:160],
+                             "start": item.get("start"), "end": item.get("end")})
+    for flag_index, flag in enumerate((url.get("flags") or [])[:5], 1):
         title = str(flag.get("title") or "").strip()
         if title:
-            findings.append({"kind": "url_flag", "title": title[:160]})
+            findings.append({"kind": "url_flag", "title": title[:160], "flag_index": flag_index})
     return {
         "source": report.get("source"), "url": url.get("url"),
         "action": action, "policy": report.get("policy"), "checks": report.get("checks"),
@@ -99,11 +102,11 @@ def generate_review(report: dict, language: str, *, _client: Any = None) -> dict
         else:
             field_sources[key] = "generated"
         generated[key] = value.strip()
-    # a citation that points at no listed finding would mislead the reviewer; fall
-    # back to the fixed template instead of shipping an unverifiable reference
+    # a citation that points at no listed finding (including [0]) would mislead the
+    # reviewer; fall back to the fixed template instead of an unverifiable reference
     steps = generated["review_steps"]
     cited = {int(m) for m in re.findall(r"\[(\d+)\]", steps)}
-    if cited and (not facts["findings"] or max(cited) > len(facts["findings"])):
+    if cited and (not facts["findings"] or min(cited) < 1 or max(cited) > len(facts["findings"])):
         generated["review_steps"] = ("请对照原文核对扫描判定与副本状态，再决定后续处置。" if language == "zh" else
                                      "Compare the original source with the scan disposition and copy status before deciding the next action.")
         field_sources["review_steps"] = "template"
