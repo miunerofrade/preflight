@@ -18,6 +18,9 @@ let batchItems = [];
 let lastView = null;
 let agentReview = null;
 let agentDecisionBusy = false;
+// last scan attempt, so a failed run can offer an in-place retry
+let lastFile = null;
+let lastAttempt = null;
 
 function renderAgentContext() {
   if (!agentReview) return;
@@ -294,10 +297,22 @@ function markdownOf(report, text, language = LANG) {
 }
 
 function renderReview(review) {
+  // generated steps may cite numbered findings as [2]; give each citation the finding as a tooltip
+  const findings = review.facts?.findings || [];
+  const stepLines = String(review.generated.review_steps).split("\n").map(s => s.trim()).filter(Boolean);
+  const steps = stepLines.map(line => {
+    const linked = esc(line).replace(/\[(\d+)\]/g, (m, d) => {
+      const f = findings.find(x => x.index === Number(d));
+      if (!f) return m;
+      const tip = esc(String(f.quote || f.title || "")).replace(/"/g, "");
+      return `<abbr class="step-ref" title="${tip}">[${d}]</abbr>`;
+    });
+    return `<li>${linked}</li>`;
+  }).join("");
   return `<p class="detail-intro">${esc(t("report.generatedNote"))}</p>
     <section class="detail-section"><h3>${esc(review.generated.title)}</h3></section>
     <section class="detail-section"><h3>${esc(t("report.summary"))}</h3><p class="review-text">${esc(review.generated.summary)}</p></section>
-    <section class="detail-section"><h3>${esc(t("report.steps"))}</h3><p class="review-text">${esc(review.generated.review_steps)}</p></section>
+    <section class="detail-section"><h3>${esc(t("report.steps"))}</h3>${steps ? `<ul class="review-steps">${steps}</ul>` : `<p class="review-text">${esc(review.generated.review_steps)}</p>`}</section>
     <p class="record-foot">${esc(t("report.usage", { n: review.calls, ms: review.total_ms }))}</p>`;
 }
 
@@ -444,6 +459,7 @@ async function runScan() {
   const text = $("input").value.trim();
   if (!text) { showError(t("err.empty")); return; }
   if (text.length > 20000) { showError(t("err.tooLong")); return; }
+  lastAttempt = "text";
   setBusy(true);
   hideError();
   try {
@@ -464,6 +480,7 @@ async function runBatch() {
   if (items.length < 2) { showError(t("err.batchFew")); return; }
   if (items.length > 10) { showError(t("err.batchMany")); return; }
   batchItems = items;
+  lastAttempt = "batch";
   setBusy(true);
   hideError();
   try {
@@ -478,6 +495,8 @@ async function runBatch() {
 
 async function scanFile(file) {
   if (file.size > MAX_FILE_BYTES) { showError(t("err.fileBig")); return; }
+  lastFile = file;
+  lastAttempt = "file";
   setBusy(true);
   hideError();
   try {
@@ -524,6 +543,40 @@ function renderVerdict(action, policy) {
     .join("");
 }
 
+// one plain-language summary with direct actions; risk-free items stay hidden
+function renderConclusion(data) {
+  const box = $("conclusion");
+  const layers = data.layers || {};
+  const inj = layers.injection || {};
+  const parts = [];
+  if (inj.verdict && inj.verdict !== "benign") parts.push(t("concl.injection", { n: (inj.evidence || []).length }));
+  const scr = layers.script;
+  if (scr && scr.verdict && scr.verdict !== "benign") parts.push(t("concl.script", { v: localizedValue(scr.verdict) }));
+  const flags = (data.url || {}).flags || [];
+  if (flags.length) parts.push(t("concl.flags", { n: flags.length }));
+  const h = data.handoff;
+  if (h && ["ready", "review", "withheld"].includes(h.status)) {
+    const c = h.changes || {};
+    if (h.status === "withheld") parts.push(t("concl.copy.withheld", { reason: t(`handoff.reason.${h.reason}`) }));
+    else if (c.removed || c.masked || c.scripts_removed)
+      parts.push(t(h.status === "ready" ? "concl.copy.ready" : "concl.copy.review"));
+  }
+  const actions = [];
+  if (data.source?.kind === "url") actions.push(`<button class="text-action" type="button" data-concl="evidence">${esc(t("concl.viewEvidence"))}</button>`);
+  else if (data.source?.kind === "text") actions.push(`<button class="text-action" type="button" data-concl="evidence">${esc(t("concl.viewEvidence"))}</button>`);
+  if (h?.edits?.length) actions.push(`<button class="text-action" type="button" data-concl="edits">${esc(t("concl.viewEdits"))}</button>`);
+  box.hidden = !parts.length && !actions.length;
+  box.innerHTML = `${parts.length ? `<p>${parts.map(esc).join(" ")}</p>` : ""}
+    ${actions.length ? `<div class="concl-actions">${actions.join("")}</div>` : ""}`;
+  for (const btn of box.querySelectorAll("[data-concl]")) {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.concl === "edits") { openDetail("edits"); return; }
+      if (data.source?.kind === "url") openDetail("evidence");
+      else $("source").closest(".panel").scrollIntoView({ behavior: "smooth" });
+    });
+  }
+}
+
 function render(data, text, { fromBatch = false } = {}) {
   if (!fromBatch) lastView = { kind: "single", data, text };
   const { action, routing, layers } = data;
@@ -535,6 +588,7 @@ function render(data, text, { fromBatch = false } = {}) {
   $("source").closest(".panel").hidden = false;
 
   renderVerdict(action, data.policy);
+  renderConclusion(data);
 
   // routing line + notes
   const fileMode = data.source && data.source.kind !== "text";
@@ -614,6 +668,9 @@ function renderHandoff(data) {
   $("handoff-diff-note").hidden = true;
   $("handoff-diff-note").textContent = "";
   $("handoff-edits").innerHTML = "";
+  $("handoff-script-warn").hidden = true;
+  $("handoff-edit").hidden = true;
+  $("handoff-edit-toggle").hidden = true;
   if (!h) return;
   const kind = { ready: "ok", review: "warn", withheld: "bad", unavailable: "neutral" }[h.status] || "neutral";
   $("handoff-status").className = `chip chip-${kind}`;
@@ -626,7 +683,11 @@ function renderHandoff(data) {
   const notes = [];
   if (changes.removed) notes.push(t("handoff.removedCount", { n: changes.removed }));
   if (changes.masked) notes.push(t("handoff.maskedCount", { n: changes.masked }));
-  if (changes.scripts_removed) notes.push(t("handoff.scriptRemoved"));
+  if (changes.scripts_removed) {
+    // a wholesale replacement throws away the task's script content; say so plainly
+    $("handoff-script-warn").textContent = t("handoff.scriptWarn");
+    $("handoff-script-warn").hidden = false;
+  }
   if ((!canCopy && !hasDraft) || h.reason === "recheck_failed") notes.push(t(`handoff.reason.${h.reason}`));
   $("handoff-note").textContent = notes.join(LANG === "zh" ? "，" : "; ");
   $("handoff-note").hidden = !notes.length;
@@ -636,6 +697,8 @@ function renderHandoff(data) {
     $("handoff-status").textContent = t("handoff.draftStatus");
   }
   $("handoff-confirm").hidden = !(canCopy && h.status === "review");
+  $("handoff-edit-toggle").hidden = !(canCopy || hasDraft);
+  $("handoff-edit-toggle").textContent = t(canCopy ? "handoff.editOpen" : "handoff.editDraftOpen");
   $("copy").disabled = !canCopy || h.status !== "ready";
   $("handoff-diff").hidden = !h.edits?.length && !(changes.removed || changes.masked || changes.scripts_removed);
   $("handoff-diff-label").disabled = !h.edits?.length;
@@ -867,6 +930,7 @@ async function runUrl() {
   let url = $("input").value.trim();
   if (!url) { showError(t("err.urlEmpty")); return; }
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  lastAttempt = "url";
   setBusy(true);
   hideError();
   try {
@@ -890,6 +954,7 @@ function renderUrl(data) {
   $("pdf-inspection").hidden = true;
 
   renderVerdict(action, data.policy);
+  renderConclusion(data);
   renderHandoff(data);
   if (data.risk && data.risk.malicious_probability != null) {
     $("verdict-conf").textContent += t("verdict.risk", { p: pct(data.risk.malicious_probability) });
@@ -968,11 +1033,12 @@ function renderUrl(data) {
 /* ---------- misc ---------- */
 
 function showError(msg) {
+  $("error-text").textContent = msg;
+  $("error-retry").hidden = !lastAttempt;
   const el = $("error");
-  el.textContent = msg;
   el.hidden = false;
 }
-function hideError() { $("error").hidden = true; }
+function hideError() { $("error").hidden = true; $("error-retry").hidden = true; }
 
 async function copySanitized() {
   if (agentReview) { await decideAgentInput(true); return; }
@@ -1126,6 +1192,45 @@ $("confirm-copy").addEventListener("change", () => {
 $("export-json").addEventListener("click", exportJson);
 $("export-md").addEventListener("click", exportMarkdown);
 $("generate-report").addEventListener("click", generateReviewReport);
+
+// edit the prepared copy and run the recheck from right here; the new scan
+// invalidates the previous confirmation, so nothing stale can be copied
+$("handoff-edit-toggle").addEventListener("click", () => {
+  const h = lastReport?.handoff;
+  if (!h) return;
+  $("handoff-edit-text").value = typeof h.text === "string" ? h.text : (h.draft_text ?? "");
+  $("handoff-edit").hidden = false;
+  $("handoff-edit-toggle").hidden = true;
+});
+$("handoff-edit-cancel").addEventListener("click", () => {
+  $("handoff-edit").hidden = true;
+  $("handoff-edit-toggle").hidden = false;
+});
+$("handoff-rescan").addEventListener("click", async () => {
+  const text = $("handoff-edit-text").value.trim();
+  if (!text) { showError(t("err.empty")); return; }
+  if (text.length > 20000) { showError(t("err.tooLong")); return; }
+  lastAttempt = "text";
+  setBusy(true);
+  hideError();
+  try {
+    const data = await streamScan("/api/scan", jsonInit({ text }), STEPS.text);
+    lastReport = data; lastText = text;
+    render(data, text);
+    verdictPanel().scrollIntoView({ behavior: "smooth" });
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    setBusy(false);
+  }
+});
+// a failed attempt retries in place with the same inputs; it reruns the scan,
+// it does not resume from the last completed stage
+$("error-retry").addEventListener("click", () => {
+  hideError();
+  if (lastAttempt === "file" && lastFile) scanFile(lastFile);
+  else runCurrent();
+});
 $("mode-single").addEventListener("click", () => setMode("single"));
 $("mode-batch").addEventListener("click", () => setMode("batch"));
 $("mode-url").addEventListener("click", () => setMode("url"));

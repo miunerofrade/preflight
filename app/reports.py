@@ -22,6 +22,20 @@ def review_facts(report: dict) -> dict:
     url = report.get("url") or {}
     injection = layers.get("injection") or {}
     script = layers.get("script") or {}
+    # numbered findings let the generated steps cite specific evidence, e.g. "[2]"
+    findings: list[dict[str, Any]] = []
+    for item in (injection.get("evidence") or [])[:5]:
+        quote = str(item.get("quote") or item.get("text") or "").strip()
+        if quote:
+            findings.append({"kind": "injection", "quote": quote[:160]})
+    for item in (script.get("evidence") or [])[:5]:
+        quote = str(item.get("quote") or item.get("text") or "").strip()
+        if quote:
+            findings.append({"kind": "script", "quote": quote[:160]})
+    for flag in (url.get("flags") or [])[:5]:
+        title = str(flag.get("title") or "").strip()
+        if title:
+            findings.append({"kind": "url_flag", "title": title[:160]})
     return {
         "source": report.get("source"), "url": url.get("url"),
         "action": action, "policy": report.get("policy"), "checks": report.get("checks"),
@@ -30,6 +44,7 @@ def review_facts(report: dict) -> dict:
         "personal_data_counts": (layers.get("pii") or {}).get("counts"),
         "impersonation": layers.get("impersonation"), "domain_flags": url.get("flags"),
         "claims": url.get("claims"), "sources": url.get("sources"), "receipt": url.get("snapshot"),
+        "findings": [{"index": i + 1, **f} for i, f in enumerate(findings)],
         "handoff": {key: handoff.get(key) for key in ("status", "reason", "changes", "validation")},
         "recheck_action": (handoff.get("verification") or {}).get("action"),
         "recheck_policy": (handoff.get("verification") or {}).get("policy"),
@@ -50,6 +65,8 @@ def generate_review(report: dict, language: str, *, _client: Any = None) -> dict
         "Missing or null check results mean unknown or not performed, never no risk found. "
         "Do not reclassify risk, override action/policy, or claim a withheld draft passed its recheck. "
         "Distinguish original action from the edited copy's status. Describe suggestions as suggestions. "
+        "The record contains numbered findings; when a review step targets one specific finding, cite its "
+        "index in square brackets like [2]. Never invent an index or cite one that is not listed. "
         "fixed_script_replacement means the entire input was replaced by a fixed marker; "
         "describe that as a full replacement, not a model-approved or repaired script. "
         "Report observed findings directly. Do not add blanket disclaimers about untrusted input, "
@@ -62,7 +79,7 @@ def generate_review(report: dict, language: str, *, _client: Any = None) -> dict
         "summary": {"type": "generate", "format": "text", "max_tokens": 160,
                     "description": f"One or two concise sentences in {output_language}: the specific observed risk, original disposition and actual edited-copy status. No general disclaimers."},
         "review_steps": {"type": "generate", "format": "text", "max_tokens": 160,
-                         "description": f"One or two concrete next actions in {output_language}, one per line, tied to the findings. Do not repeat the summary as a checklist or approve forwarding."},
+                         "description": f"One or two concrete next actions in {output_language}, one per line, tied to the numbered findings and citing an index like [2] when an action targets one. Do not repeat the summary as a checklist or approve forwarding."},
     }
     started = time.perf_counter()
     result = (_client if _client is not None else Clocked()).fill(text=text, fields=fields, instructions=instructions)

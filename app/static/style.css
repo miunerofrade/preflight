@@ -558,6 +558,16 @@ mark { padding: 0; color: inherit; background: transparent; text-decoration-line
 .group-tag { margin-right: 8px; padding: 2px 8px; }
 .sim-note { display: grid; gap: 4px; padding: 0 16px; }
 
+/* conclusion summary under the verdict: one line of findings plus direct actions */
+.conclusion { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--track); display: grid; gap: 6px; }
+.conclusion p { margin: 0; font-size: var(--fs-14); color: var(--ink-2); line-height: 1.6; }
+.concl-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.handoff-script-warn { color: var(--warn); font-weight: 600; }
+.handoff-edit { display: grid; gap: 8px; margin-top: 10px; }
+.handoff-edit-actions { display: flex; gap: 8px; }
+.review-steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.step-ref { text-decoration: underline dotted; cursor: help; }
+
 /* ---------- narrow screens ---------- */
 
 @media (max-width: 840px) {

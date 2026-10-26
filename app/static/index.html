@@ -49,7 +49,7 @@
     </div>
   </section>
 
-  <p id="error" class="error" role="alert" hidden></p>
+  <p id="error" class="error" role="alert" hidden><span id="error-text"></span> <button id="error-retry" class="text-action" type="button" hidden></button></p>
 
   <section id="results" class="results" aria-live="polite" hidden>
     <section class="panel agent-context" id="agent-context" hidden>
@@ -78,6 +78,7 @@
       </div>
       </div>
       <div class="verdict-probs" id="verdict-probs"></div>
+      <div class="conclusion" id="conclusion" hidden></div>
     </section>
 
     <div class="cards" id="cards">
@@ -123,6 +124,7 @@
         </div>
       </div>
       <p class="note" id="handoff-note"></p>
+      <p class="note handoff-script-warn" id="handoff-script-warn" hidden></p>
       <div class="handoff-checks" id="handoff-checks" hidden></div>
       <div class="handoff-review" id="handoff-diff" hidden>
         <button class="text-action" id="handoff-diff-label" type="button" data-detail="edits"></button>
@@ -134,6 +136,16 @@
         <input type="checkbox" id="confirm-copy">
         <span data-i18n="handoff.confirm"></span>
       </label>
+      <button class="text-action" id="handoff-edit-toggle" type="button" hidden></button>
+      <div class="handoff-edit" id="handoff-edit" hidden>
+        <label class="field-label" for="handoff-edit-text" data-i18n="handoff.editLabel"></label>
+        <textarea id="handoff-edit-text" rows="6" spellcheck="false"></textarea>
+        <div class="handoff-edit-actions">
+          <button id="handoff-rescan" class="btn btn-primary" type="button" data-i18n="handoff.rescan"></button>
+          <button id="handoff-edit-cancel" class="btn btn-quiet" type="button" data-i18n="handoff.editCancel"></button>
+        </div>
+        <p class="note" data-i18n="handoff.editNote"></p>
+      </div>
     </section>
 
     <p class="stats" id="stats"></p>

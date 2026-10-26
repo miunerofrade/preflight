@@ -94,6 +94,15 @@ the same screening and a full record.
 - **Review each edit** — open the prepared copy's comparison dialog to compare the exact
   original span with its replacement and see why it changed. The edit log preserves
   Unicode source/copy positions and is included in JSON and Markdown exports.
+- **One conclusion, direct actions** — the verdict area states in one sentence what was
+  found (injection evidence, script verdict, URL risk signals, copy status) and links
+  straight to the evidence and the edit comparison. Risk-free items stay hidden.
+- **Edit the copy, recheck in place** — the copy panel opens an editor over the prepared
+  text; rechecking runs a full new scan over the edited text, and the previous
+  confirmation expires with the new result. A wholesale script replacement says so
+  explicitly: the copy keeps only the replacement marker.
+- **Retry a failed scan in place** — errors offer a retry with the same inputs; the retry
+  reruns the scan, it does not resume from the last completed stage.
 - **One-click examples** — three primary examples (ordinary notes, a project update with
   a hidden instruction, a private support ticket), plus malicious and benign scripts,
   batch triage and a live official-site URL control. Text examples are synthetic and
@@ -203,8 +212,11 @@ It does not rerun detection or change the original disposition, evidence or copy
 The draft opens in the shared detail dialog and is cached per scan and language. Reopening
 it makes no additional call. Generation usage is reported separately from scan usage;
 generation failure leaves both exports available. Only curated scan facts are sent to Fill,
-not the full original text or prepared copy. If no review suggestion is returned, a fixed
-manual-comparison reminder is used and identified as a template in the generated record.
+not the full original text or prepared copy. The scan facts include numbered findings;
+generated steps cite them as [2]-style references and each citation shows the finding as
+a tooltip, so a suggestion points at the evidence it is about. If no review suggestion is
+returned, a fixed manual-comparison reminder is used and identified as a template in the
+generated record.
 
 The page initially uses English and remembers language changes. Markdown headings and
 descriptions use the language selected at export time, while source quotations stay verbatim.
@@ -294,6 +306,8 @@ A full development cycle fits comfortably inside the 20,000 challenge credits.
   or analyzed.
 - Batch is capped at 10 items and 20,000 characters each; this is a preflight gate, not a
   streaming pipeline.
+- Retry after a failure reruns the whole scan with the same inputs; there is no stage-level
+  resume, and a recheck of an edited copy is a full new scan by design.
 
 ## Stack
 
