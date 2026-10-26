@@ -239,7 +239,7 @@ pre:focus-visible {
 .verdict-summary { grid-column: span 8; display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 24px; min-width: 0; padding-inline: var(--panel-inset); }
 .verdict-probs { grid-column: span 4; min-width: 0; padding-inline: var(--panel-inset); }
 
-.gauge { position: relative; width: 120px; height: 120px; }
+.gauge { position: relative; width: 120px; height: 120px; margin-bottom: 28px; }
 .gauge svg { display: block; width: 100%; height: 100%; overflow: visible; }
 .gauge-track,
 .gauge-fill { fill: none; stroke-width: 10; shape-rendering: geometricPrecision; }
@@ -264,7 +264,7 @@ pre:focus-visible {
   text-align: center;
 }
 .gauge-center > span:first-child { font-size: var(--fs-24); font-weight: 700; line-height: 1.2; }
-.gauge-cap { font-size: var(--fs-14); color: var(--ink-3); }
+.gauge-cap { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: var(--fs-14); line-height: 20px; color: var(--ink-3); }
 .verdict-word { font-size: var(--fs-32); font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; }
 .verdict-allow { color: var(--ok); }
 .verdict-review { color: var(--warn); }
