@@ -559,7 +559,7 @@ mark { padding: 0; color: inherit; background: transparent; text-decoration-line
 .sim-note { display: grid; gap: 4px; padding: 0 16px; }
 
 /* conclusion summary under the verdict: one line of findings plus direct actions */
-.conclusion { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--track); display: grid; gap: 6px; }
+.conclusion { grid-column: 1 / -1; margin-top: 0; padding-top: 4px; display: grid; gap: 6px; justify-items: start; }
 .conclusion p { margin: 0; font-size: var(--fs-14); color: var(--ink-2); line-height: 1.6; }
 .concl-actions { display: flex; flex-wrap: wrap; gap: 12px; }
 .handoff-script-warn { color: var(--warn); font-weight: 600; }
