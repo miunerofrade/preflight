@@ -10,6 +10,8 @@ before the copy is offered; removing an instruction always requires human review
 
 Built for the **Clocked Build Challenge** (Oct 21 – Nov 10, 2026).
 
+Interface changes follow the repository [UI spec](docs/UI_SPEC.md) and [contributor instructions](AGENTS.md).
+
 ## The problem
 
 Prompt injection is the #1 risk in the OWASP Top 10 for LLM applications, and real zero-click
@@ -80,7 +82,8 @@ instructions are removed; detected personal-data values are replaced in full wit
 `[REDACTED]`. Names alone do not trigger masking or another scan; when contact/identity
 data is present, names are masked too. Risky scripts are withheld, not automatically rewritten. Any changed text
 is scanned again with Guard, Protect, routing, conditional Inspect and Decide. A copy
-with remaining risks or personal data is withheld. A copy whose injection was removed
+with remaining risks or personal data is withheld from handoff copying; its edited draft
+remains visible for inspection and manual revision. A copy whose injection was removed
 always needs human review, even when its recheck passes. The original block stays block.
 Files and URLs receive reports only; no text copy is implied for those modes.
 

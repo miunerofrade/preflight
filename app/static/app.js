@@ -189,7 +189,7 @@ function chip(text, kind = "neutral") {
 
 function detectorStatus(result) {
   if (result.verdict === "benign") return "";
-  return chip(`${result.verdict} · ${result.severity}`, (SEV_CHIP[result.verdict] || "chip-warn").replace("chip-", ""));
+  return chip(`${result.verdict}: ${result.severity}`, (SEV_CHIP[result.verdict] || "chip-warn").replace("chip-", ""));
 }
 
 function paintSpans(text, spans) {
@@ -256,7 +256,7 @@ function markdownOf(report, text) {
     lines.push(`- Verdict: **${report.action.choice.toUpperCase()}** (confidence ${pct(report.action.confidence)})`);
     if (report.risk && report.risk.malicious_probability != null)
       lines.push(`- Malicious / pirated site probability: ${pct(report.risk.malicious_probability)}`);
-    lines.push(`- Calls: ${report.usage.calls} · tokens ${report.usage.input_tokens} in / ${report.usage.output_tokens} out · ${report.total_ms} ms`);
+    lines.push(`- Calls: ${report.usage.calls} ; tokens ${report.usage.input_tokens} in / ${report.usage.output_tokens} out ; ${report.total_ms} ms`);
     lines.push("", "## Sources and retrieval receipt",
       `- Requested URL: ${u.snapshot?.requested_url || u.url}`,
       `- Analyzed URL: ${u.snapshot?.url || "unknown"}`,
@@ -276,11 +276,11 @@ function markdownOf(report, text) {
     lines.push("");
     const inj = report.layers.injection || {};
     lines.push(`## Guard — prompt injection on page content`);
-    lines.push(`Score ${pct(inj.injection)} · verdict ${inj.verdict} · severity ${inj.severity}`);
+    lines.push(`Score ${pct(inj.injection)} ; verdict ${inj.verdict} ; severity ${inj.severity}`);
     lines.push("");
     const scr = report.layers.script;
     lines.push(`## Inspect — inline scripts`);
-    lines.push(scr ? `Malicious ${pct(scr.malicious)} · verdict ${scr.verdict} · severity ${scr.severity}` : "No inline scripts found");
+    lines.push(scr ? `Malicious ${pct(scr.malicious)} ; verdict ${scr.verdict} ; severity ${scr.severity}` : "No inline scripts found");
     lines.push("");
     const idn = report.layers.identity;
     lines.push(`## Identity grounding`);
@@ -302,11 +302,11 @@ function markdownOf(report, text) {
   lines.push(`- Generated: ${new Date().toISOString()}`);
   if (report.source) lines.push(`- Source: ${report.source.kind}${report.source.name ? ` (${report.source.name})` : ""}`);
   lines.push(`- Verdict: **${report.action.choice.toUpperCase()}** (confidence ${pct(report.action.confidence)})`);
-  lines.push(`- Calls: ${report.usage.calls} · tokens ${report.usage.input_tokens} in / ${report.usage.output_tokens} out · ${report.total_ms} ms`);
+  lines.push(`- Calls: ${report.usage.calls} ; tokens ${report.usage.input_tokens} in / ${report.usage.output_tokens} out ; ${report.total_ms} ms`);
   lines.push("");
   const inj = report.layers.injection || {};
   lines.push(`## Guard — prompt injection`);
-  lines.push(`Score ${pct(inj.injection)} · verdict ${inj.verdict} · severity ${inj.severity}`);
+  lines.push(`Score ${pct(inj.injection)} ; verdict ${inj.verdict} ; severity ${inj.severity}`);
   if (inj.evidence && inj.evidence.length) {
     lines.push("");
     for (const e of inj.evidence) lines.push(`> "${e.quote}" (${e.start}–${e.end})`);
@@ -314,7 +314,7 @@ function markdownOf(report, text) {
   lines.push("");
   const scr = report.layers.script;
   lines.push(`## Inspect — script safety`);
-  lines.push(scr ? `Malicious ${pct(scr.malicious)} · verdict ${scr.verdict} · severity ${scr.severity}` : `Not run${text === null ? " (file scan)" : " (no executable code)"}`);
+  lines.push(scr ? `Malicious ${pct(scr.malicious)} ; verdict ${scr.verdict} ; severity ${scr.severity}` : `Not run${text === null ? " (file scan)" : " (no executable code)"}`);
   lines.push("");
   const pii = report.layers.pii || {};
   lines.push(`## Protect — personal data`);
@@ -640,7 +640,7 @@ function renderHandoff(data) {
   if (h.edits?.length) {
     $("handoff-diff-label").textContent = t("diff.show", { n: h.edits.length });
     $("handoff-edits").innerHTML = (!canCopy ? `<p class="note diff-note">${esc(t("diff.withheld"))}</p>` : "") + h.edits.map(edit => `<div class="edit-entry">
-      <p class="edit-heading">${esc(t(`diff.${edit.kind}`))} · ${esc(t("diff.range", { a: edit.start + 1, b: edit.end }))}</p>
+      <p class="edit-heading"><span>${esc(t(`diff.${edit.kind}`))}</span><span>${esc(t("diff.range", { a: edit.start + 1, b: edit.end }))}</span></p>
       <div class="edit-columns"><div><span class="hint">${esc(t("diff.before"))}</span><pre class="source edit-before">${esc(edit.before)}</pre></div>
       <div><span class="hint">${esc(t(canCopy ? "diff.after" : "diff.attempted"))}</span><pre class="source ${canCopy ? "edit-after" : "edit-pending"}">${esc(edit.after)}</pre></div></div></div>`).join("");
   } else {
@@ -673,8 +673,8 @@ function renderPdfInspection(pdf) {
   const findings = pdf.findings || [];
   $("pdf-inspection").innerHTML = `<div class="panel-head pdf-heading"><h2>${esc(t("pdf.h"))}</h2>
     ${pdf.status !== "complete" || findings.some(f => f.requires_review) ? chip(t(`pdf.status.${pdf.status}`), "warn") : ""}</div>
-    <p class="note">${esc(t("pdf.scope"))}</p><p class="evidence-meta">${esc(t("pdf.pages", { n: pdf.pages_checked, total: pdf.pages }))}${pdf.reason ? " · " + esc(t(`pdf.reason.${pdf.reason}`)) : ""}</p>
-    ${findings.length ? findings.map(f => `<details class="evidence-item"><summary>${esc(t(`pdf.kind.${f.kind}`))} · ${esc(f.page ? t("pdf.page", { n: f.page }) : t("pdf.metadata"))}</summary>
+    <p class="note">${esc(t("pdf.scope"))}</p><p class="evidence-meta">${esc(t("pdf.pages", { n: pdf.pages_checked, total: pdf.pages }))}${pdf.reason ? " ; " + esc(t(`pdf.reason.${pdf.reason}`)) : ""}</p>
+    ${findings.length ? findings.map(f => `<details class="evidence-item"><summary>${esc(t(`pdf.kind.${f.kind}`))} ; ${esc(f.page ? t("pdf.page", { n: f.page }) : t("pdf.metadata"))}</summary>
       <blockquote class="source-quote">${esc(f.text)}</blockquote>${f.bbox ? `<p class="evidence-meta">${esc(t("pdf.position", { box: f.bbox.join(", "), size: f.font_size }))}</p>` : ""}</details>`).join("") : `<p class="note">${esc(t(pdf.status === "complete" ? "pdf.noFindings" : "pdf.unknown"))}</p>`}
     ${pdf.metadata?.length ? `<details class="evidence-item"><summary>${esc(t("pdf.metadata"))}</summary>${pdf.metadata.map(m => `<p class="hint">${esc(m.field)}</p><blockquote class="source-quote">${esc(m.value)}</blockquote>`).join("")}</details>` : ""}`;
 }
@@ -701,7 +701,8 @@ function renderSource(data, text) {
 
 function renderStats(data) {
   const u = data.usage;
-  $("stats").textContent = t("stats", { c: u.calls, i: u.input_tokens, o: u.output_tokens, ms: data.total_ms });
+  $("stats").innerHTML = t("stats", { c: u.calls, i: u.input_tokens, o: u.output_tokens, ms: data.total_ms })
+    .split("\n").map(item => `<span>${esc(item)}</span>`).join("");
 }
 
 /* ---------- batch ---------- */
@@ -804,16 +805,16 @@ function renderUrlEvidence(u, detailed = false) {
   const claims = claimList.map(c => {
     const context = c.quote && typeof c.start === "number"
       ? Array.from(u.claim_source || "").slice(Math.max(0, c.start - 50), c.end + 50).join("") : null;
-    return `<section class="detail-section"><div class="record-heading"><h3>${esc(t("evidence.pageClaim"))} · ${esc(c.value)}</h3>
+    return `<section class="detail-section"><div class="record-heading"><h3>${esc(t("evidence.pageClaim"))}: ${esc(c.value)}</h3>
       <span class="record-status">${esc(t(`evidence.status.${c.status}`))}</span></div>
       ${context ? `<blockquote class="detail-quote">${esc(context)}</blockquote>` : `<p class="note">${esc(t("evidence.unlocated"))}</p>`}</section>`;
   }).join("");
   const sources = (u.sources || []).map(source => {
     const value = source.kind === "identity" ? (source.domains?.join(", ") || t("evidence.unknown"))
       : source.value != null ? String(source.value) : t("evidence.unknown");
-    return `<section class="detail-section ${source.kind === "identity" ? "record-wide" : ""}"><h3>${esc(t(`evidence.kind.${source.kind}`))}${source.claimed ? " · " + esc(source.claimed) : ""}</h3>
+    return `<section class="detail-section ${source.kind === "identity" ? "record-wide" : ""}"><h3>${esc(t(`evidence.kind.${source.kind}`))}${source.claimed ? ": " + esc(source.claimed) : ""}</h3>
       <p class="record-value">${esc(value)}</p><p class="record-status">${esc(t(`evidence.status.${source.status}`))}</p>
-      <p class="record-foot">${sourceLink(source.url, source.provider || t("evidence.unknown"))}${source.server ? " · " + esc(source.server) : ""}<br>${esc(t("evidence.observed", { time: sourceTime(source.checked_at) }))}</p></section>`;
+      <p class="record-foot">${sourceLink(source.url, source.provider || t("evidence.unknown"))}${source.server ? "<br>" + esc(source.server) : ""}<br>${esc(t("evidence.observed", { time: sourceTime(source.checked_at) }))}</p></section>`;
   }).join("");
   const receipt = [
     [t("evidence.requested"), sourceLink(snapshot.requested_url || u.url, snapshot.requested_url || u.url || t("evidence.unknown"))],
@@ -914,7 +915,7 @@ function renderUrl(data) {
     <article class="card panel">
       <h2>${esc(t("url.domain.h"))}</h2>
       <div class="card-body">${flags}
-        <p class="evidence-count">${esc(t("url.password", { v: t(u.has_password_form ? "url.yes" : "url.no") }))} ·
+        <p class="evidence-count">${esc(t("url.password", { v: t(u.has_password_form ? "url.yes" : "url.no") }))}<br>
           ${esc(u.title ? t("url.title", { t: u.title }) : t("url.noTitle"))}</p>
       </div>
     </article>
