@@ -98,16 +98,38 @@ def decide_agent_input(ticket: str, req: AgentDecisionRequest, request: Request)
 
 class AgentRevisionRequest(BaseModel):
     review_token: str
-    report: dict[str, Any]
+    base_revision: int
+    request_id: str
+    text: str
 
 
 @app.post("/api/agent-inputs/{ticket}/revision")
 def revise_agent_input(ticket: str, req: AgentRevisionRequest, request: Request) -> dict:
-    """Rebind the ticket to the freshly rescanned copy after a human edit, so the
-    approved hash always matches the report the reviewer is looking at."""
+    """One server-side operation for a human edit: scan the submitted text here,
+    then bind the fresh report and candidate to the ticket. The client supplies
+    only the edit; verdicts, candidates and hashes come from this server."""
     _agent_review_request(request)
     try:
-        return agent_inputs.revise(ticket, req.review_token, req.report)
+        return agent_inputs.revise(ticket, req.review_token, req.base_revision, req.request_id, req.text)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Invalid review token.")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+class AgentAbandonRequest(BaseModel):
+    review_token: str
+
+
+@app.post("/api/agent-inputs/{ticket}/abandon")
+def abandon_agent_input(ticket: str, req: AgentAbandonRequest, request: Request) -> dict:
+    """Explicitly give up an in-progress or failed revision; the previously bound
+    version stays in place and must be reviewed and confirmed again."""
+    _agent_review_request(request)
+    try:
+        return agent_inputs.abandon_revision(ticket, req.review_token)
     except KeyError:
         raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
     except PermissionError:

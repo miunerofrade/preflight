@@ -102,30 +102,106 @@ def test_file_check_releases_a_snapshot_and_blocked_url_does_not_scan_body(monke
         assert blocked["status"] == "blocked" and "content" not in blocked
 
 
-def test_revision_rebinds_a_pending_ticket_to_the_rescanned_copy():
+def test_revision_scans_server_side_and_rebinds(monkeypatch):
     store = AgentInputStore()
     ticket, token = pending(store)
-    revised = store.revise(ticket, token, report("review", "Edited checked copy"))
-    assert revised["status"] == "pending"
-    review = store.review(ticket, token)
-    assert review["candidate_sha256"] == digest("Edited checked copy")
-    # approval now binds to the new copy; the old hash no longer releases anything
+    old_hash = store.review(ticket, token)["candidate_sha256"]
+
+    calls = []
+
+    def fake_scan(text, **_):
+        calls.append(text)
+        return report("review", f"Copy of {text}")
+
+    monkeypatch.setattr(agent_module, "scan", fake_scan)
+    result = store.revise(ticket, token, 0, "req-1", "Edited by human")
+    assert result["status"] == "bound" and result["revision"] == 1
+    assert result["ticket_status"] == "pending"  # a human edit always needs one more confirm
+    assert result["candidate_sha256"] == digest("Copy of Edited by human")
+    assert calls == ["Edited by human"]  # the server scanned the submitted text itself
+
+    # the old version and the old hash can no longer be approved
     with pytest.raises(ValueError, match="hash"):
-        store.decide(ticket, token, digest("Checked copy"), True)
-    store.decide(ticket, token, digest("Edited checked copy"), True)
-    assert store.result(ticket)["content"] == "Edited checked copy"
+        store.decide(ticket, token, old_hash, True)
+    store.decide(ticket, token, digest("Copy of Edited by human"), True)
+    assert store.result(ticket)["content"] == "Copy of Edited by human"
+    summary = store.review(ticket, token)["revisions"]
+    assert [(r["index"], r["parent"]) for r in summary] == [(0, -1), (1, 0)]
+    assert summary[1]["submitted_sha256"] == digest("Edited by human")
 
 
-def test_revision_rejects_wrong_token_released_and_blocked_rescans():
+def test_forged_report_cannot_release_text(monkeypatch):
+    """The revision endpoint takes text only; there is no way to submit a verdict,
+    a candidate or a hash from the client."""
     store = AgentInputStore()
     ticket, token = pending(store)
-    with pytest.raises(PermissionError):
-        store.revise(ticket, "wrong", report("review", "x"))
-    store.revise(ticket, token, report("review", "Edited"))
-    store.decide(ticket, token, digest("Edited"), True)
-    with pytest.raises(ValueError, match="pending"):
-        store.revise(ticket, token, report("review", "Again"))
-    second, second_token = pending(store)
-    store.revise(second, second_token, report("withheld", None))
-    assert store.review(second, second_token)["candidate_sha256"] is None
-    assert store.result(second)["status"] == "blocked"
+
+    def fake_scan(text, **_):
+        return report("review", "Server copy")
+
+    monkeypatch.setattr(agent_module, "scan", fake_scan)
+    store.revise(ticket, token, 0, "req-1", "honest edit")
+    assert store.result(ticket)["status"] == "pending"
+    assert "content" not in store.result(ticket)
+    # a forged report is not a valid revision payload: revise() has no report parameter,
+    # and decide still requires the server-computed hash
+    with pytest.raises(ValueError):
+        store.decide(ticket, token, digest("FORGED RELEASE"), True)
+    assert store.review(ticket, token)["candidate_sha256"] == digest("Server copy")
+
+
+def test_failed_revision_blocks_the_old_copy_until_resolved(monkeypatch):
+    store = AgentInputStore()
+    ticket, token = pending(store)
+
+    def boom(text, **_):
+        raise RuntimeError("scan down")
+
+    monkeypatch.setattr(agent_module, "scan", boom)
+    with pytest.raises(RuntimeError):
+        store.revise(ticket, token, 0, "req-1", "Edited by human")
+    review = store.review(ticket, token)
+    assert review["revising"]["state"] == "failed" and "scan down" in review["revising"]["error"]
+    with pytest.raises(ValueError, match="revision is in progress"):
+        store.decide(ticket, token, review["candidate_sha256"], True)
+    assert "content" not in store.result(ticket)
+
+    # retrying the same operation id and text reruns the scan and succeeds
+    monkeypatch.setattr(agent_module, "scan", lambda text, **_: report("review", f"Copy of {text}"))
+    result = store.revise(ticket, token, 0, "req-1", "Edited by human")
+    assert result["status"] == "bound" and result["candidate_sha256"] == digest("Copy of Edited by human")
+
+    # abandoning an unresolved revision restores the previous version explicitly
+    ticket2, token2 = pending(store)
+    monkeypatch.setattr(agent_module, "scan", boom)
+    with pytest.raises(RuntimeError):
+        store.revise(ticket2, token2, 0, "req-2", "Another edit")
+    store.abandon_revision(ticket2, token2)
+    review2 = store.review(ticket2, token2)
+    assert review2["revising"] is None and review2["revision"] == 0
+    store.decide(ticket2, token2, review2["candidate_sha256"], True)
+    assert store.result(ticket2)["content"] == "Checked copy"
+
+
+def test_revision_idempotency_and_conflicts(monkeypatch):
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    calls = []
+
+    def fake_scan(text, **_):
+        calls.append(text)
+        return report("review", f"Copy of {text}")
+
+    monkeypatch.setattr(agent_module, "scan", fake_scan)
+    first = store.revise(ticket, token, 0, "req-1", "Edited once")
+    replay = store.revise(ticket, token, 0, "req-1", "Edited once")
+    assert replay["candidate_sha256"] == first["candidate_sha256"] and calls == ["Edited once"]
+
+    with pytest.raises(ValueError, match="different content"):
+        store.revise(ticket, token, 0, "req-1", "Edited differently")
+    with pytest.raises(ValueError, match="updated elsewhere"):
+        store.revise(ticket, token, 0, "req-2", "Second edit")
+    second = store.revise(ticket, token, 1, "req-2", "Second edit")
+    assert second["revision"] == 2 and second["report"] == store.review(ticket, token)["report"]
+    with pytest.raises(ValueError, match="updated elsewhere"):
+        store.revise(ticket, token, 0, "req-3", "Stale page edit")
