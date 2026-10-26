@@ -41,6 +41,20 @@ test("source highlights use code points after emoji and escape HTML", () => {
     '📋 <mark class="mark-inj">&lt;bad&gt;</mark>');
 });
 
+test("overlapping evidence keeps both annotation types and localizes SDK labels", () => {
+  const app = ui();
+  const html = app.run('paintSpans("📋 <mail>", [{start:2,end:8,cls:"inj"},{start:3,end:7,cls:"pii"}])');
+  assert.match(html, /<mark class="mark-inj"><mark class="mark-pii">mail<\/mark><\/mark>/);
+  assert.doesNotMatch(html, /<mail>/);
+  app.run('renderInjection({verdict:"injection",severity:"critical",injection:.995,categories:{"instruction override":.52,"tool misuse or data exfiltration":.44}})');
+  assert.match(app.get("body-injection").innerHTML, /提示注入: 严重/);
+  assert.match(app.get("body-injection").innerHTML, /指令覆盖/);
+  assert.doesNotMatch(app.get("body-injection").innerHTML, /instruction override|critical/);
+  app.run('renderScript(null, {contains_code:false}, false)');
+  assert.equal(app.get("card-script").hidden, true);
+  assert.equal(app.run('localizedFlag({title:"Download destination is set by script",detail:"https://example.com/file"}).title'), "下载目标由脚本指定");
+});
+
 test("copy is unavailable until an edited review copy is explicitly acknowledged", async () => {
   const app = ui();
   app.context.payload = { handoff: { status: "review", text: "Checked copy", changes: { removed: 1, masked: 0 },
@@ -177,8 +191,8 @@ test("new evidence and edit markup escapes content and refuses non-web source li
   app.context.payload = { source: { kind: "url" }, handoff: { status: "unavailable", text: null,
     reason: "url_source", changes: { removed: 0, masked: 0 }, edits: [] } };
   app.run("renderHandoff(payload)");
-  assert.equal(app.get("handoff-diff").hidden, false);
-  assert.match(app.get("handoff-diff-note").textContent, /网址风险报告/);
+  assert.equal(app.get("sanitized-panel").hidden, true);
+  assert.equal(app.get("handoff-diff").hidden, true);
   assert.equal(app.get("copy").disabled, true);
   app.context.evidence = { claim_source: "QQ音乐下载页", claims: [
     { value: "QQ音乐", quote: "QQ音乐", start: 0, end: 4, status: "quoted" },

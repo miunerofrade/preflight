@@ -25,7 +25,7 @@ const REPORT_LABELS = {
   },
   zh: {
     title: "Preflight 安检报告", generated: "生成时间", source: "检查对象", verdict: "最终处置",
-    confidence: "模型置信度", usage: "扫描用量", calls: "次调用", tokens: "令牌", time: "毫秒",
+    confidence: "模型置信度", usage: "扫描用量", calls: "次调用", tokens: "token", time: "毫秒",
     policy: "处置规则", model: "模型建议", injection: "提示注入", script: "脚本安全", pii: "个人信息",
     severity: "严重程度", score: "分数", counts: "检出数量", evidence: "原文证据", sources: "来源与抓取记录",
     url: "请求网址", final: "分析网址", fetched: "抓取时间", hash: "响应 SHA-256", redirects: "跳转记录",
@@ -47,7 +47,7 @@ const REPORT_LABELS = {
 
 function reportMarkdown(report, language = "en", reviewReport = null) {
   const L = REPORT_LABELS[language] || REPORT_LABELS.en;
-  const translate = value => ({ review: L.reviewAction, injection: L.injectionValue, url: L.urlKind }[value] || L[value] || value || L.unknown);
+  const translate = value => ({ review: L.reviewAction, injection: L.injectionValue, url: L.urlKind }[value] || L[value] || localizedValue(value, language) || L.unknown);
   const message = key => I18N[language]?.[key] || I18N.en[key] || key;
   const percentage = value => `${(Math.max(0, Math.min(1, value || 0)) * 100).toFixed(1)}%`;
   // HTML tags in evidence remain visible literal text when Markdown is rendered.
@@ -96,7 +96,7 @@ function reportMarkdown(report, language = "en", reviewReport = null) {
       if (s.url || s.server) item(L.source, s.url || s.server);
       if (s.checked_at) item(L.fetched, s.checked_at);
     }
-    if (u.flags?.length) { section(L.flags); for (const f of u.flags) item(translate(f.severity), `${f.title}: ${f.detail}`); }
+    if (u.flags?.length) { section(L.flags); for (const raw of u.flags) { const f = localizedFlag(raw, language); item(translate(f.severity), `${f.title}: ${f.detail}`); } }
     const imp = layers.impersonation;
     if (imp) { section(L.identity); item(L.brand, `${translate(imp.brand?.choice)} (${percentage(imp.brand?.confidence)})`); item(L.intent, `${translate(imp.intent?.choice)} (${percentage(imp.intent?.confidence)})`); }
     if (layers.identity) { section(message("url.identity")); quote(JSON.stringify(layers.identity.claims || layers.identity, null, 2)); }
@@ -110,7 +110,9 @@ function reportMarkdown(report, language = "en", reviewReport = null) {
   }
   const h = report.handoff;
   if (h) {
-    section(L.copy); item(L.status, translate(h.status)); item(L.reason, message(`handoff.reason.${h.reason}`));
+    section(L.copy); item(L.status, translate(h.status));
+    const reason = message(`handoff.reason.${h.reason}`);
+    if (reason) item(L.reason, reason);
     if (h.changes?.removed) item(L.removed, h.changes.removed);
     if (h.changes?.masked) item(L.masked, h.changes.masked);
     if (h.verification) item(L.recheck, translate(h.verification.action.choice));

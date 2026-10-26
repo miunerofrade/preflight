@@ -159,7 +159,7 @@ const pct = (v) => `${(Math.max(0, Math.min(1, v || 0)) * 100).toFixed(1)}%`;
 const actionLabel = (c) => t(`action.${c}`);
 
 // labels the backend may send that have no translation are shown as-is
-const sevLabel = (s) => (I18N[LANG][`sev.${s}`] ? t(`sev.${s}`) : s);
+const sevLabel = (s) => localizedValue(s);
 
 const locale = () => (LANG === "zh" ? "zh-CN" : "en-US");
 
@@ -179,7 +179,7 @@ function topCats(cats, n = 3) {
     .filter(([key]) => !["benign", "none"].includes(key))
     .sort((a, b) => b[1] - a[1])
     .slice(0, n)
-    .map(([k, v]) => bar(k, v))
+    .map(([k, v]) => bar(localizedValue(k), v))
     .join("");
 }
 
@@ -189,28 +189,37 @@ function chip(text, kind = "neutral") {
 
 function detectorStatus(result) {
   if (result.verdict === "benign") return "";
-  return chip(`${result.verdict}: ${result.severity}`, (SEV_CHIP[result.verdict] || "chip-warn").replace("chip-", ""));
+  return chip(`${localizedValue(result.verdict)}: ${localizedValue(result.severity)}`, (SEV_CHIP[result.verdict] || "chip-warn").replace("chip-", ""));
 }
 
 function paintSpans(text, spans) {
   const chars = Array.from(text); // Clocked offsets count Unicode code points, not UTF-16 units.
-  // priority: pii < script < injection (later overwrites earlier)
-  const prio = { pii: 1, script: 2, inj: 3 };
-  const cls = new Array(chars.length).fill(null);
-  for (const s of [...spans].sort((a, b) => prio[a.cls] - prio[b.cls])) {
+  const kinds = ["inj", "script", "pii"];
+  const bits = { inj: 1, script: 2, pii: 4 };
+  const cls = new Uint8Array(chars.length);
+  for (const s of spans) {
+    if (!bits[s.cls] || !Number.isInteger(s.start) || !Number.isInteger(s.end)) continue;
     const a = Math.max(0, Math.min(chars.length, s.start | 0));
     const b = Math.max(0, Math.min(chars.length, s.end | 0));
-    for (let i = a; i < b; i++) cls[i] = s.cls;
+    for (let i = a; i < b; i++) cls[i] |= bits[s.cls];
   }
-  let html = "", run = null, buf = "";
+  const marked = (value, mask) => {
+    let html = esc(value);
+    for (let i = kinds.length - 1; i >= 0; i--) {
+      const kind = kinds[i];
+      if (mask & bits[kind]) html = `<mark class="mark-${kind}">${html}</mark>`;
+    }
+    return html;
+  };
+  let html = "", run = 0, buf = "";
   for (let i = 0; i < chars.length; i++) {
     if (cls[i] !== run) {
-      html += run ? `<mark class="mark-${run}">${esc(buf)}</mark>` : esc(buf);
+      html += marked(buf, run);
       run = cls[i]; buf = "";
     }
     buf += chars[i];
   }
-  html += run ? `<mark class="mark-${run}">${esc(buf)}</mark>` : esc(buf);
+  html += marked(buf, run);
   return html;
 }
 
@@ -476,12 +485,13 @@ function render(data, text, { fromBatch = false } = {}) {
 
   // routing line + notes
   const fileMode = data.source && data.source.kind !== "text";
-  let routingHtml = esc(t("routing", {
+  $("source").closest(".panel").hidden = !!fileMode;
+  let routingHtml = routing.contains_code ? esc(t("routing", {
     s: t(routing.contains_code ? "routing.yes" : "routing.no"),
     p: pct(routing.confidence),
-  }));
-  if (data.notes) routingHtml += data.notes.map((n) => `<br><span class="note">${esc(n)}</span>`).join("");
+  })) : "";
   $("routing").innerHTML = routingHtml;
+  $("routing").hidden = !routingHtml;
 
   renderInjection(layers.injection);
   renderScript(layers.script, routing, fileMode);
@@ -506,8 +516,9 @@ function renderInjection(inj) {
 }
 
 function renderScript(scr, routing, fileMode) {
+  $("card-script").hidden = !scr && !routing.contains_code;
   if (!scr) {
-    const why = fileMode && routing.contains_code ? t("script.fileCode") : t("script.notRun");
+    const why = fileMode ? t("script.fileCode") : t("script.incomplete");
     $("body-script").innerHTML = `<p class="note">${esc(why)}</p>`;
     return;
   }
@@ -526,7 +537,7 @@ function renderPii(pii, fileMode) {
   for (const e of ents) byType[e.type] = (byType[e.type] || 0) + 1;
   const chips = Object.entries(byType)
     .sort((a, b) => b[1] - a[1])
-    .map(([ty, n]) => `<span class="entity"><i class="dot dot-pii"></i>${esc(ty)} × ${n}</span>`)
+    .map(([ty, n]) => `<span class="entity">${esc(localizedValue(ty))} × ${n}</span>`)
     .join("");
   $("body-pii").innerHTML = `
     <div class="score-row">
@@ -538,7 +549,7 @@ function renderPii(pii, fileMode) {
 
 function renderHandoff(data) {
   const h = data.handoff;
-  $("sanitized-panel").hidden = !h;
+  $("sanitized-panel").hidden = !h || h.status === "unavailable";
   $("confirm-copy").checked = false;
   $("copy").textContent = t("btn.copy");
   $("copy").disabled = true;
@@ -557,21 +568,22 @@ function renderHandoff(data) {
   $("handoff-status").hidden = !["review", "withheld"].includes(h.status);
   $("copy").hidden = h.status === "unavailable";
   const changes = h.changes || { removed: 0, masked: 0 };
-  $("handoff-note").textContent = t(`handoff.reason.${h.reason}`) +
-    ((changes.removed || changes.masked) ? " " + t("handoff.changes", { r: changes.removed, m: changes.masked }) : "");
   const canCopy = typeof h.text === "string" && ["ready", "review"].includes(h.status);
   const hasDraft = h.status === "withheld" && typeof h.draft_text === "string";
+  const notes = [];
+  if (changes.removed) notes.push(t("handoff.removedCount", { n: changes.removed }));
+  if (changes.masked) notes.push(t("handoff.maskedCount", { n: changes.masked }));
+  if ((!canCopy && !hasDraft) || h.reason === "recheck_failed") notes.push(t(`handoff.reason.${h.reason}`));
+  $("handoff-note").textContent = notes.join(LANG === "zh" ? "，" : "; ");
+  $("handoff-note").hidden = !notes.length;
   $("sanitized").hidden = !(canCopy || hasDraft);
   if (canCopy || hasDraft) $("sanitized").textContent = canCopy ? h.text : h.draft_text;
   if (hasDraft) {
     $("handoff-status").textContent = t("handoff.draftStatus");
-    $("handoff-note").textContent += " " + t("handoff.draftNote");
-    const reasons = h.verification?.policy?.reasons || [];
-    if (reasons.length) $("handoff-note").textContent += " " + reasons.map(r => t(`policy.${r.code}`)).join(" ");
   }
   $("handoff-confirm").hidden = !(canCopy && h.status === "review");
   $("copy").disabled = !canCopy || h.status !== "ready";
-  $("handoff-diff").hidden = false;
+  $("handoff-diff").hidden = !h.edits?.length && !(changes.removed || changes.masked);
   $("handoff-diff-label").disabled = !h.edits?.length;
   if (h.edits?.length) {
     $("handoff-diff-label").textContent = t("diff.show", { n: h.edits.length });
@@ -611,7 +623,7 @@ function renderPdfInspection(pdf) {
     ${pdf.status !== "complete" || findings.some(f => f.requires_review) ? chip(t(`pdf.status.${pdf.status}`), "warn") : ""}</div>
     <p class="note">${esc(t("pdf.scope"))}</p><p class="evidence-meta">${esc(t("pdf.pages", { n: pdf.pages_checked, total: pdf.pages }))}${pdf.reason ? " ; " + esc(t(`pdf.reason.${pdf.reason}`)) : ""}</p>
     ${findings.length ? findings.map(f => `<details class="evidence-item"><summary>${esc(t(`pdf.kind.${f.kind}`))} ; ${esc(f.page ? t("pdf.page", { n: f.page }) : t("pdf.metadata"))}</summary>
-      <blockquote class="source-quote">${esc(f.text)}</blockquote>${f.bbox ? `<p class="evidence-meta">${esc(t("pdf.position", { box: f.bbox.join(", "), size: f.font_size }))}</p>` : ""}</details>`).join("") : `<p class="note">${esc(t(pdf.status === "complete" ? "pdf.noFindings" : "pdf.unknown"))}</p>`}
+      <blockquote class="source-quote">${esc(f.text)}</blockquote>${f.bbox ? `<p class="evidence-meta">${esc(t("pdf.position", { box: f.bbox.join(", "), size: f.font_size }))}</p>` : ""}</details>`).join("") : pdf.status !== "complete" ? `<p class="note">${esc(t("pdf.unknown"))}</p>` : ""}
     ${pdf.metadata?.length ? `<details class="evidence-item"><summary>${esc(t("pdf.metadata"))}</summary>${pdf.metadata.map(m => `<p class="hint">${esc(m.field)}</p><blockquote class="source-quote">${esc(m.value)}</blockquote>`).join("")}</details>` : ""}`;
 }
 
@@ -631,7 +643,7 @@ function renderSource(data, text) {
     spans.push({ start: e.start, end: e.end, cls: "pii" });
   $("source").innerHTML = paintSpans(text, spans);
   document.querySelectorAll(".legend [data-layer]").forEach(key => {
-    key.hidden = !spans.some(span => span.cls === key.dataset.layer);
+    key.hidden = !$("source").innerHTML.includes(`class="mark-${key.dataset.layer}"`);
   });
 }
 
@@ -673,8 +685,8 @@ function renderBatch(data, openIndex = null) {
     </button>`).join("");
 
   const conflicts = (sim && sim.conflicts) || [];
-  const simNote = !sim ? "" : `<div class="sim-note">
-      <p class="note">${esc(groups.length ? t("batch.groups", { n: groups.length }) : t("batch.noGroups"))}</p>
+  const simNote = !sim || (!groups.length && !conflicts.length) ? "" : `<div class="sim-note">
+      ${groups.length ? `<p class="note">${esc(t("batch.groups", { n: groups.length }))}</p>` : ""}
       ${conflicts.map((c) => `<p class="note">${esc(t("batch.conflict", { a: c.a + 1, b: c.b + 1 }))}</p>`).join("")}
     </div>`;
 
@@ -759,7 +771,7 @@ function renderUrlEvidence(u, detailed = false) {
     ["SHA-256", `<code>${esc(snapshot.sha256 || t("evidence.unknown"))}</code>`],
   ];
   const redirects = (snapshot.redirects || []).map(h => `<p class="record-foot">${sourceLink(h.from, h.from)} → ${sourceLink(h.to, h.to)}</p>`).join("");
-  return `<p class="detail-intro">${esc(t("evidence.note"))}</p>${claims || `<p class="note">${esc(t("evidence.noClaim"))}</p>`}
+  return `${claims}
     <div class="record-grid">${sources}</div><section class="detail-section"><h3>${esc(t("evidence.receipt"))}</h3>
     <dl class="receipt-list">${receipt.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${value}</dd></div>`).join("")}</dl>${redirects}</section>`;
 }
@@ -827,17 +839,15 @@ function renderUrl(data) {
   }
 
   const u = data.url || {};
-  const flags = (u.flags || []).map((f) =>
+  const flags = (u.flags || []).map(f => localizedFlag(f)).map((f) =>
     `<details class="flag"><summary><span class="chip ${FLAG_CHIP[f.severity] || "chip-neutral"}">${esc(sevLabel(f.severity))}</span>
        <strong class="flag-title">${esc(f.title)}</strong></summary>
        <p class="flag-detail">${esc(f.detail)}</p></details>`).join("")
-    || `<p class="note">${esc(t("url.noFlags"))}</p>`;
+    || "";
 
   const imp = layers.impersonation || {};
   const idn = layers.identity;
-  const idSummary = idn
-    ? (idn.summary || idn.verdict || JSON.stringify(idn.claims || idn).slice(0, 400))
-    : t("url.noIdentity");
+  const idSummary = idn?.verdict ? localizedValue(idn.verdict) : "";
   const claimed = (u.claimed_identity && u.claimed_identity.length ? u.claimed_identity : u.brands_mentioned) || [];
   const brandKind = imp.brand?.choice === "impersonation" ? "bad" : imp.brand?.choice === "legitimate" ? "ok" : "neutral";
   const inj = layers.injection || {};
@@ -854,16 +864,16 @@ function renderUrl(data) {
     <article class="card panel">
       <h2>${esc(t("url.domain.h"))}</h2>
       <div class="card-body">${flags}
-        <p class="evidence-count">${esc(t("url.password", { v: t(u.has_password_form ? "url.yes" : "url.no") }))}<br>
+        <p class="evidence-count">${u.has_password_form ? esc(t("url.password", { v: t("url.yes") })) + "<br>" : ""}
           ${esc(u.title ? t("url.title", { t: u.title }) : t("url.noTitle"))}</p>
       </div>
     </article>
     <article class="card panel">
       <h2>${esc(t("url.imp.h"))}</h2>
       <div class="card-body">
-        ${brandKind === "ok" ? "" : `<div class="score-row">${chip(imp.brand?.choice || "?", brandKind)}</div>`}
+        ${brandKind === "ok" ? "" : `<div class="score-row">${chip(localizedValue(imp.brand?.choice || "?"), brandKind)}</div>`}
         ${bar(t("url.imp.brand"), imp.brand?.confidence)}
-        ${bar(t("url.imp.intent", { c: imp.intent?.choice || "?" }), imp.intent?.confidence)}
+        ${bar(t("url.imp.intent", { c: localizedValue(imp.intent?.choice || "?") }), imp.intent?.confidence)}
         <p class="evidence-count">${esc(t("url.claimed", { v: [...new Set(claimed)].join(", ") || t("url.none") }))}</p>
       </div>
     </article>
@@ -883,11 +893,11 @@ function renderUrl(data) {
         ${layers.script
           ? `<div class="score-row"><p class="score">${pct(layers.script.malicious).replace("%", "")}<small> / 100</small></p>
              ${detectorStatus(layers.script)}</div>`
-          : `<p class="note">${esc(t("url.noScripts"))}</p>`}
-        <p class="note"><strong>${esc(t("url.identity"))}</strong>${esc(String(idSummary)).slice(0, 300)}</p>
+          : ""}
+        ${idSummary ? `<p class="note"><strong>${esc(t("url.identity"))}</strong>${esc(idSummary)}</p>` : ""}
       </div>
     </article>
-    <article class="card panel card-wide">
+    <article class="card panel card-wide" ${psg?.picked?.length ? "" : "hidden"}>
       <h2>${esc(t("url.psg.h"))}</h2>
       <div class="card-body">${passageBody}</div>
     </article>${renderUrlEvidence(u)}`;
