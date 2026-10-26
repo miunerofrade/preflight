@@ -39,7 +39,10 @@ class Revision:
     candidate: str | None
     candidate_sha256: str | None
     created: float
+    submitted_text: str = ""
     approved: bool = False
+    decided_at: float | None = None
+    decision: str | None = None
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -47,7 +50,10 @@ class Revision:
             "submitted_sha256": self.submitted_sha256,
             "candidate_sha256": self.candidate_sha256,
             "created": dt.datetime.fromtimestamp(self.created, dt.timezone.utc).isoformat(),
-            "approved": self.approved,
+            "approved": self.approved, "decision": self.decision,
+            "decided_at": (dt.datetime.fromtimestamp(self.decided_at, dt.timezone.utc).isoformat()
+                           if self.decided_at is not None else None),
+            "submitted_text": self.submitted_text, "candidate": self.candidate, "report": self.report,
         }
 
 
@@ -69,6 +75,7 @@ class AgentInput:
     # an accepted revision operation: {request_id, text_sha256, state, error, result};
     # while it exists the previously bound copy cannot be approved
     revising: dict[str, Any] | None = None
+    operations: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _candidate_and_status(report: dict) -> tuple[str | None, str]:
@@ -179,7 +186,7 @@ class AgentInputStore:
         item = AgentInput(secrets.token_urlsafe(24), secrets.token_urlsafe(32), time.monotonic(), language,
                           source, text, report, candidate, digest(candidate) if candidate is not None else None, status)
         item.revisions = [Revision(0, -1, digest(text), report, candidate,
-                                   item.candidate_sha256, time.time())]
+                                   item.candidate_sha256, time.time(), submitted_text=text)]
         with self._lock:
             self._prune()
             if len(self._items) >= self.capacity:
@@ -207,118 +214,106 @@ class AgentInputStore:
         with self._lock:
             return self._result(self._get(ticket))
 
+    def _authorized(self, ticket: str, token: str) -> AgentInput:
+        item = self._get(ticket)
+        if not secrets.compare_digest(item.review_token.encode("utf-8"), token.encode("utf-8")):
+            raise PermissionError("Invalid review token.")
+        return item
+
     def review(self, ticket: str, token: str) -> dict:
         with self._lock:
-            item = self._get(ticket)
-            if not secrets.compare_digest(item.review_token.encode("utf-8"), token.encode("utf-8")):
-                raise PermissionError("Invalid review token.")
-            revising_summary = ({"state": item.revising["state"], "error": item.revising["error"]}
-                                if item.revising else None)
-            return {"source": item.source, "text": item.text, "report": item.report,
+            item = self._authorized(ticket, token)
+            op = item.revising
+            revising = ({key: op[key] for key in
+                         ("request_id", "base_revision", "text", "state", "error")} if op else None)
+            return {"source": item.source, "text": item.revisions[-1].submitted_text,
+                    "original_text": item.text, "report": item.report,
                     "candidate_sha256": item.candidate_sha256, "status": item.status, "language": item.language,
-                    "revision": item.revision,
-                    "revising": revising_summary,
+                    "revision": item.revision, "revising": revising,
                     "revisions": [r.summary() for r in item.revisions],
-                    "receipt": {"source_sha256": digest(item.text), "copy_sha256": item.candidate_sha256,
-                                "human_approved": item.approved}}
+                    "receipt": {"source_sha256": digest(item.text),
+                                "submitted_sha256": item.revisions[-1].submitted_sha256,
+                                "copy_sha256": item.candidate_sha256, "human_approved": item.approved}}
 
     def revise(self, ticket: str, token: str, base_revision: int, request_id: str, text: str) -> dict:
-        """One server-side operation: validate the caller's version, scan the edited
-        text here, then bind the fresh report and candidate. The client never supplies
-        a report, a verdict, a candidate or a hash."""
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("The edited text is empty.")
-        if len(text) > MAX_TEXT or "\x00" in text:
+        if not text.strip() or len(text) > MAX_TEXT or "\x00" in text:
             raise ValueError("The edited text must contain 1-20,000 readable characters.")
+        if not request_id or len(request_id) > 128:
+            raise ValueError("A request id of at most 128 characters is required.")
         text_sha = digest(text)
         with self._lock:
-            item = self._get(ticket)
-            if not secrets.compare_digest(item.review_token.encode("utf-8"), token.encode("utf-8")):
-                raise PermissionError("Invalid review token.")
-            if item.status != "pending":
-                raise ValueError("Only a pending ticket can be revised.")
-            op = item.revising
-            if op is not None and op["request_id"] != request_id:
-                if op["state"] == "scanning":
-                    raise ValueError("Another revision is already in progress. Refresh the review page.")
-                if op["state"] == "failed":
-                    raise ValueError("The previous revision failed. Retry it with the same request id or abandon it first.")
-                # a completed revision does not block a new one
-                item.revising = None
-                op = None
+            item = self._authorized(ticket, token)
+            op = item.operations.get(request_id)
             if op is not None:
-                if op["text_sha256"] != text_sha:
-                    raise ValueError("This request id was already used with different content.")
-                if op["state"] == "scanning":
-                    # replaying a finished or running operation needs no base check:
-                    # it either returns the stored result or the in-progress marker
-                    return {"status": "revising", "request_id": request_id}
+                if op["text_sha256"] != text_sha or op["base_revision"] != base_revision:
+                    raise ValueError("This request id was already used with different content or version.")
                 if op["state"] == "done":
-                    return {**op["result"], "request_id": request_id}
-                # state == "failed": same id, same text -> a safe retry, re-validated below
+                    return op["result"]
+                if op["state"] == "abandoned":
+                    raise ValueError("This revision was abandoned. Use a new request id.")
+                if op["state"] == "scanning":
+                    return {"status": "revising", "request_id": request_id}
             if base_revision != item.revision:
                 raise ValueError("This ticket was updated elsewhere. Refresh the review page.")
-            item.revising = {"request_id": request_id, "text_sha256": text_sha,
-                             "state": "scanning", "error": None, "result": None}
-        # the scan runs without the store lock; concurrent callers see "revising"
+            if item.status != "pending":
+                raise ValueError("Only a pending ticket can be revised.")
+            if item.revising is not None and item.revising is not op:
+                raise ValueError("Another revision is unresolved. Refresh the review page.")
+            if op is None:
+                if len(item.operations) >= 64:
+                    raise ValueError("Revision limit reached. Start a new input ticket.")
+                op = {"request_id": request_id, "base_revision": base_revision,
+                      "text_sha256": text_sha, "text": text, "state": "scanning", "error": None}
+                item.operations[request_id] = op
+            op.update(state="scanning", error=None)
+            item.revising = op
+        # No global lock during paid work. Abandonment invalidates this exact operation.
         try:
             report = scan(text, source_name=item.source)
-        except Exception as exc:
+        except Exception:
             with self._lock:
-                current = self._items.get(ticket)
-                op = current.revising if current else None
-                if op and op["request_id"] == request_id and op["state"] == "scanning":
-                    op["state"] = "failed"
-                    op["error"] = str(exc)
+                if item.revising is op and op["state"] == "scanning":
+                    op.update(state="failed", error="Revision check failed. Retry or abandon this edit.")
             raise
         with self._lock:
-            current = self._items.get(ticket)
-            op = current.revising if current else None
-            if (current is None or op is None or op["request_id"] != request_id
-                    or current.revision != base_revision):
+            current = self._get(ticket)  # Also enforce TTL when the scan finishes.
+            if (current is not item or item.revising is not op or op["state"] != "scanning"
+                    or item.revision != base_revision or item.status != "pending"):
                 raise ValueError("The ticket changed during the revision. Refresh the review page.")
             candidate, status = _candidate_and_status(report)
             if status == "released":
-                # a human edit is a content change: it always needs one more confirmation
-                status = "pending"
-            entry = Revision(current.revision + 1, current.revision, text_sha, report, candidate,
-                             digest(candidate) if candidate is not None else None, time.time())
-            current.revisions.append(entry)
-            current.revision = entry.index
-            current.report = report
-            current.candidate = candidate
-            current.candidate_sha256 = entry.candidate_sha256
-            current.status = status
-            current.approved = False
-            result = {"status": "bound", "revision": entry.index, "ticket_status": status,
-                      "candidate_sha256": entry.candidate_sha256, "report": report,
-                      "revisions": [r.summary() for r in current.revisions]}
-            op["state"] = "done"
-            op["result"] = result
-            return {**result, "request_id": request_id}
+                status = "pending"  # Editing is never implicit approval.
+            entry = Revision(item.revision + 1, item.revision, text_sha, report, candidate,
+                             digest(candidate) if candidate is not None else None, time.time(),
+                             submitted_text=text)
+            item.revisions.append(entry)
+            item.revision = entry.index
+            item.report, item.candidate = report, candidate
+            item.candidate_sha256, item.status, item.approved = entry.candidate_sha256, status, False
+            result = {"status": "bound", "request_id": request_id, "revision": entry.index,
+                      "ticket_status": status, "candidate_sha256": entry.candidate_sha256}
+            op.update(state="done", result=result)
+            item.revising = None
+            return result
 
-    def abandon_revision(self, ticket: str, token: str) -> dict:
-        """Explicitly give up an in-progress or failed revision and stay on the
-        previously bound version. Never happens automatically on errors."""
+    def abandon_revision(self, ticket: str, token: str, base_revision: int, request_id: str) -> dict:
         with self._lock:
-            item = self._get(ticket)
-            if not secrets.compare_digest(item.review_token.encode("utf-8"), token.encode("utf-8")):
-                raise PermissionError("Invalid review token.")
-            if item.revising is None:
-                raise ValueError("There is no revision to abandon.")
-            if item.revising["state"] == "done":
-                raise ValueError("This revision already completed and is the bound version.")
+            item = self._authorized(ticket, token)
+            op = item.revising
+            if (op is None or op["request_id"] != request_id or base_revision != item.revision):
+                raise ValueError("The revision changed. Refresh the review page.")
+            op["state"] = "abandoned"
             item.revising = None
             return {"status": item.status, "revision": item.revision,
                     "candidate_sha256": item.candidate_sha256}
 
-    def decide(self, ticket: str, token: str, candidate_sha256: str, approve: bool) -> dict:
+    def decide(self, ticket: str, token: str, candidate_sha256: str, approve: bool,
+               base_revision: int) -> dict:
         with self._lock:
-            item = self._get(ticket)
-            self.review(ticket, token)
-            if item.revising is not None and item.revising["state"] in ("scanning", "failed"):
-                # an unresolved revision freezes the previously bound copy; approve only
-                # the version that is actually on screen
+            item = self._authorized(ticket, token)
+            if base_revision != item.revision:
+                raise ValueError("This ticket was updated elsewhere. Refresh the review page.")
+            if item.revising is not None:
                 raise ValueError("A revision is in progress. Abandon it or wait for it to finish.")
             if item.status != "pending" or item.candidate is None:
                 raise ValueError("Only a pending, checked copy can be approved or rejected.")
@@ -326,6 +321,8 @@ class AgentInputStore:
                 raise ValueError("Copy hash changed. Review the current copy first.")
             item.status = "released" if approve else "rejected"
             item.approved = approve
+            entry = item.revisions[-1]
+            entry.approved, entry.decision, entry.decided_at = approve, item.status, time.time()
             return {"status": item.status}
 
 

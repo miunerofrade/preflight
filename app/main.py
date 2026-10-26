@@ -58,6 +58,8 @@ class ScanUrlRequest(BaseModel):
 
 
 class AgentDecisionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    base_revision: int
     review_token: str
     candidate_sha256: str
     approve: bool
@@ -87,7 +89,7 @@ def get_agent_input(ticket: str, review_token: str, request: Request) -> JSONRes
 def decide_agent_input(ticket: str, req: AgentDecisionRequest, request: Request) -> dict:
     _agent_review_request(request)
     try:
-        return agent_inputs.decide(ticket, req.review_token, req.candidate_sha256, req.approve)
+        return agent_inputs.decide(ticket, req.review_token, req.candidate_sha256, req.approve, req.base_revision)
     except KeyError:
         raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
     except PermissionError:
@@ -97,6 +99,7 @@ def decide_agent_input(ticket: str, req: AgentDecisionRequest, request: Request)
 
 
 class AgentRevisionRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     review_token: str
     base_revision: int
     request_id: str
@@ -110,7 +113,7 @@ def revise_agent_input(ticket: str, req: AgentRevisionRequest, request: Request)
     only the edit; verdicts, candidates and hashes come from this server."""
     _agent_review_request(request)
     try:
-        return agent_inputs.revise(ticket, req.review_token, req.base_revision, req.request_id, req.text)
+        return _guarded(lambda: agent_inputs.revise(ticket, req.review_token, req.base_revision, req.request_id, req.text))
     except KeyError:
         raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
     except PermissionError:
@@ -120,6 +123,9 @@ def revise_agent_input(ticket: str, req: AgentRevisionRequest, request: Request)
 
 
 class AgentAbandonRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    base_revision: int
+    request_id: str
     review_token: str
 
 
@@ -129,7 +135,7 @@ def abandon_agent_input(ticket: str, req: AgentAbandonRequest, request: Request)
     version stays in place and must be reviewed and confirmed again."""
     _agent_review_request(request)
     try:
-        return agent_inputs.abandon_revision(ticket, req.review_token)
+        return agent_inputs.abandon_revision(ticket, req.review_token, req.base_revision, req.request_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
     except PermissionError:

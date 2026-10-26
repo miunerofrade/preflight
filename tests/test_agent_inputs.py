@@ -27,20 +27,20 @@ def test_only_exact_approved_snapshot_is_released_and_rejection_is_final():
     ticket, token = pending(store)
     assert "content" not in store.result(ticket)
     with pytest.raises(PermissionError):
-        store.decide(ticket, "wrong", digest("Checked copy"), True)
+        store.decide(ticket, "wrong", digest("Checked copy"), True, base_revision=0)
     with pytest.raises(ValueError, match="hash"):
-        store.decide(ticket, token, digest("different"), True)
-    store.decide(ticket, token, digest("Checked copy"), True)
+        store.decide(ticket, token, digest("different"), True, base_revision=0)
+    store.decide(ticket, token, digest("Checked copy"), True, base_revision=0)
     result = store.result(ticket)
     assert result["content"] == "Checked copy"
     assert store.review(ticket, token)["receipt"]["human_approved"] is True
     assert set(result) == {"ticket", "status", "content"}
     assert "RAW PRIVATE CONTENT" not in str(result)
     second, token = pending(store)
-    store.decide(second, token, digest("Checked copy"), False)
+    store.decide(second, token, digest("Checked copy"), False, base_revision=0)
     assert "content" not in store.result(second)
     with pytest.raises(ValueError):
-        store.decide(second, token, digest("Checked copy"), True)
+        store.decide(second, token, digest("Checked copy"), True, base_revision=0)
 
 
 def test_ready_blocked_expired_and_queue_bounds():
@@ -77,7 +77,7 @@ def test_browser_approval_requires_local_origin_token_and_copy_hash(monkeypatch)
     response = client.get(f"/api/agent-inputs/{ticket}", params={"review_token": token})
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     assert response.json()["report"]["handoff"]["text"] == "Checked copy"
-    body = {"review_token": token, "candidate_sha256": digest("Checked copy"), "approve": True}
+    body = {"review_token": token, "candidate_sha256": digest("Checked copy"), "approve": True, "base_revision": 0}
     url = f"/api/agent-inputs/{ticket}/decision"
     assert client.post(url, json=body, headers={"Origin": "https://other.example"}).status_code == 403
     assert "content" not in store.result(ticket)
@@ -122,8 +122,8 @@ def test_revision_scans_server_side_and_rebinds(monkeypatch):
 
     # the old version and the old hash can no longer be approved
     with pytest.raises(ValueError, match="hash"):
-        store.decide(ticket, token, old_hash, True)
-    store.decide(ticket, token, digest("Copy of Edited by human"), True)
+        store.decide(ticket, token, old_hash, True, base_revision=1)
+    store.decide(ticket, token, digest("Copy of Edited by human"), True, base_revision=1)
     assert store.result(ticket)["content"] == "Copy of Edited by human"
     summary = store.review(ticket, token)["revisions"]
     assert [(r["index"], r["parent"]) for r in summary] == [(0, -1), (1, 0)]
@@ -146,7 +146,7 @@ def test_forged_report_cannot_release_text(monkeypatch):
     # a forged report is not a valid revision payload: revise() has no report parameter,
     # and decide still requires the server-computed hash
     with pytest.raises(ValueError):
-        store.decide(ticket, token, digest("FORGED RELEASE"), True)
+        store.decide(ticket, token, digest("FORGED RELEASE"), True, base_revision=1)
     assert store.review(ticket, token)["candidate_sha256"] == digest("Server copy")
 
 
@@ -161,9 +161,9 @@ def test_failed_revision_blocks_the_old_copy_until_resolved(monkeypatch):
     with pytest.raises(RuntimeError):
         store.revise(ticket, token, 0, "req-1", "Edited by human")
     review = store.review(ticket, token)
-    assert review["revising"]["state"] == "failed" and "scan down" in review["revising"]["error"]
+    assert review["revising"]["state"] == "failed" and review["revising"]["error"]
     with pytest.raises(ValueError, match="revision is in progress"):
-        store.decide(ticket, token, review["candidate_sha256"], True)
+        store.decide(ticket, token, review["candidate_sha256"], True, base_revision=0)
     assert "content" not in store.result(ticket)
 
     # retrying the same operation id and text reruns the scan and succeeds
@@ -176,10 +176,10 @@ def test_failed_revision_blocks_the_old_copy_until_resolved(monkeypatch):
     monkeypatch.setattr(agent_module, "scan", boom)
     with pytest.raises(RuntimeError):
         store.revise(ticket2, token2, 0, "req-2", "Another edit")
-    store.abandon_revision(ticket2, token2)
+    store.abandon_revision(ticket2, token2, 0, "req-2")
     review2 = store.review(ticket2, token2)
     assert review2["revising"] is None and review2["revision"] == 0
-    store.decide(ticket2, token2, review2["candidate_sha256"], True)
+    store.decide(ticket2, token2, review2["candidate_sha256"], True, base_revision=0)
     assert store.result(ticket2)["content"] == "Checked copy"
 
 
@@ -202,6 +202,109 @@ def test_revision_idempotency_and_conflicts(monkeypatch):
     with pytest.raises(ValueError, match="updated elsewhere"):
         store.revise(ticket, token, 0, "req-2", "Second edit")
     second = store.revise(ticket, token, 1, "req-2", "Second edit")
-    assert second["revision"] == 2 and second["report"] == store.review(ticket, token)["report"]
+    assert second["revision"] == 2 and store.review(ticket, token)["text"] == "Second edit"
     with pytest.raises(ValueError, match="updated elsewhere"):
         store.revise(ticket, token, 0, "req-3", "Stale page edit")
+
+
+def test_refresh_records_and_approval_bind_version_even_with_identical_copies(monkeypatch):
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    monkeypatch.setattr(agent_module, "scan", lambda text, **_: report("ready", "Checked copy"))
+    store.revise(ticket, token, 0, "a", "📋 Revised source")
+    current = store.review(ticket, token)
+    assert current["text"] == "📋 Revised source"
+    assert current["original_text"] == "RAW PRIVATE CONTENT"
+    assert current["receipt"]["submitted_sha256"] == digest(current["text"])
+    with pytest.raises(ValueError, match="updated elsewhere"):
+        store.decide(ticket, token, digest("Checked copy"), True, base_revision=0)
+    store.decide(ticket, token, digest("Checked copy"), True, base_revision=1)
+    record = store.review(ticket, token)["revisions"]
+    assert record[0]["submitted_text"] == "RAW PRIVATE CONTENT"
+    assert record[1]["submitted_text"] == "📋 Revised source"
+    assert record[1]["approved"] and record[1]["decided_at"]
+    assert record[1]["decision"] == "released"
+    assert record[1]["report"] == current["report"]
+
+
+def test_historical_operations_stay_idempotent_and_stale_requests_cannot_erase_them(monkeypatch):
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    calls = []
+    def scan(text, **_):
+        calls.append(text)
+        return report("review", text)
+    monkeypatch.setattr(agent_module, "scan", scan)
+    first = store.revise(ticket, token, 0, "a", "First")
+    store.revise(ticket, token, 1, "b", "Second")
+    with pytest.raises(ValueError):
+        store.revise(ticket, token, 0, "stale", "Stale")
+    assert store.revise(ticket, token, 0, "a", "First") == first
+    with pytest.raises(ValueError, match="different content"):
+        store.revise(ticket, token, 2, "a", "Third")
+    assert calls == ["First", "Second"]
+    assert store.review(ticket, token)["revision"] == 2
+
+
+def test_failed_edit_survives_refresh_and_abandon_is_bound_to_operation(monkeypatch):
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    def fail(*_, **__):
+        raise RuntimeError("synthetic failure")
+    monkeypatch.setattr(agent_module, "scan", fail)
+    with pytest.raises(RuntimeError):
+        store.revise(ticket, token, 0, "a", "Keep my edited text")
+    op = store.review(ticket, token)["revising"]
+    assert (op["text"], op["request_id"], op["base_revision"]) == ("Keep my edited text", "a", 0)
+    with pytest.raises(ValueError):
+        store.abandon_revision(ticket, token, 0, "wrong-operation")
+    store.abandon_revision(ticket, token, 0, "a")
+    with pytest.raises(ValueError, match="abandoned"):
+        store.revise(ticket, token, 0, "a", "Keep my edited text")
+    assert store.review(ticket, token)["revising"] is None
+
+
+def test_abandoned_scan_cannot_bind_after_a_new_revision(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    entered, finish = Event(), Event()
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    def scan(text, **_):
+        if text == "Slow edit":
+            entered.set()
+            assert finish.wait(3)
+        return report("review", text)
+    monkeypatch.setattr(agent_module, "scan", scan)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(store.revise, ticket, token, 0, "slow", "Slow edit")
+        try:
+            assert entered.wait(3)
+            assert store.revise(ticket, token, 0, "slow", "Slow edit")["status"] == "revising"
+            with pytest.raises(ValueError, match="in progress"):
+                store.decide(ticket, token, digest("Checked copy"), True, base_revision=0)
+            store.abandon_revision(ticket, token, 0, "slow")
+            store.revise(ticket, token, 0, "new", "New edit")
+        finally:
+            finish.set()
+        with pytest.raises(ValueError, match="changed during"):
+            future.result()
+    assert store.review(ticket, token)["text"] == "New edit"
+
+
+def test_revision_api_rejects_forgery_and_requires_version(monkeypatch):
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    monkeypatch.setattr(main, "agent_inputs", store)
+    monkeypatch.setattr(agent_module, "scan", lambda text, **_: report("ready", text))
+    client = TestClient(main.app, base_url="http://127.0.0.1")
+    url = f"/api/agent-inputs/{ticket}"
+    body = {"review_token": token, "base_revision": 0, "request_id": "a", "text": "Edit"}
+    assert client.post(url + "/revision", json={**body, "report": report("ready", "FORGED")}).status_code == 422
+    assert client.post(url + "/revision", json=body).status_code == 200
+    decision = {"review_token": token, "candidate_sha256": digest("Edit"), "approve": True}
+    assert client.post(url + "/decision", json=decision).status_code == 422
+    assert client.post(url + "/decision", json={**decision, "base_revision": 0}).status_code == 409
+    assert client.post(url + "/decision", json={**decision, "base_revision": 1}).status_code == 200
+    current = client.get(url, params={"review_token": token}).json()
+    assert current["text"] == "Edit" and current["revisions"][-1]["approved"]
