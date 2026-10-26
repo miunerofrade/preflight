@@ -39,7 +39,7 @@ Clean, ready text is released immediately. Copies requiring review return `pendi
 without body text. Codex shows the `review_url` to the person and waits. The local web
 page displays the existing scan report, source annotations and edit comparison. The
 person checks the copy, then selects **Allow Codex to read**, or rejects the handoff.
-The decision is stored on the server and bound to the candidate's SHA-256. Codex calls
+The decision is stored on the server and bound to the revision number and candidate's SHA-256. Codex calls
 `preflight_read` after the person's response. Repeated polling is unnecessary.
 
 `blocked`, `rejected`, expired tickets and errors never return body text or an unchecked
@@ -53,6 +53,28 @@ There is no MCP approval tool. Agents must not call the web decision endpoint or
 operate the review UI on the person's behalf. This is a cooperative workflow, not a
 sandbox or network interceptor that prevents Codex from using arbitrary shell/browser
 tools. The `AGENTS.md` instruction is part of the integration contract.
+
+### Editing a pending copy
+
+The browser submits `text`, `base_revision`, `request_id` and its review token to
+`POST /api/agent-inputs/{ticket}/revision`. The server scans the text and binds the
+result; client-supplied reports are rejected. A human edit always requires a fresh
+confirmation, even when its scan passes. The browser then reads the current review
+snapshot rather than displaying a cached operation result.
+
+The original source is retained separately from each revision's submitted text,
+scan report and prepared copy. Approval includes `base_revision` and
+`candidate_sha256`; stale revisions are refused even when their copies are identical.
+JSON exports include the version records; Markdown lists their parents, hashes and
+approval times. These records are available only on the human review side.
+
+Operation IDs are retained for the ticket's lifetime (at most 64 operations per
+ticket). Repeating the same ID, version and text reuses completed work; a different
+payload is refused. A failed edit and its operation ID survive browser refresh and
+can be retried. While a revision is unresolved, the old copy cannot be approved.
+Explicit abandonment names both the operation ID and base revision; a scan that
+finishes after abandonment cannot overwrite another version. Review-page polling
+only reads status, stops after 90 seconds per wait, and can be resumed manually.
 
 ## Supported sources
 
@@ -80,7 +102,7 @@ handling. Review logs do not print capability URLs to stdout. Tokens, source tex
 reports and copies remain in process memory for at most 30 minutes, with a 32-ticket
 limit, and disappear when the connection stops. Nothing is written to a review database.
 The browser review routes check the local host, same origin and per-ticket token; the
-approval request must name the candidate hash. Expired links require a new check.
+approval request must name the revision number and candidate hash. Expired links require a new check.
 
 Text and document contents are sent to Clocked for scanning. URL checks additionally
 use the existing public reputation sources. Review pages use the shared UI, language

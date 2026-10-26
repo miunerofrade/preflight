@@ -4,25 +4,30 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { webcrypto } = require("node:crypto");
 
 function ui(language = "zh") {
   const elements = new Map();
   const copied = [];
   function element() {
     const classes = new Set();
+    const listeners = new Map();
     return {
       value: "", textContent: "", innerHTML: "", hidden: false, disabled: false, checked: false, open: false,
       showModal() { this.open = true; }, close() { this.open = false; },
       style: {}, dataset: {},
       classList: { add: (...xs) => xs.forEach(x => classes.add(x)), remove: (...xs) => xs.forEach(x => classes.delete(x)),
         contains: x => classes.has(x), toggle: (x, on) => on ? classes.add(x) : classes.delete(x) },
-      setAttribute() {}, addEventListener() {}, appendChild() {}, closest() { return this; },
+      setAttribute() {},
+      addEventListener(type, fn) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(fn); },
+      async emit(type, event = {}) { for (const fn of listeners.get(type) || []) await fn({ target: this, ...event }); },
+      appendChild() {}, closest() { return this; }, scrollIntoView() { this.scrolled = true; },
       querySelectorAll() { return []; },
     };
   }
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const context = vm.createContext({
-    URL,
+    URL, crypto: webcrypto, TextEncoder, requestAnimationFrame: fn => fn(),
     document: { getElementById: get, createElement: element, querySelector: get,
       querySelectorAll: () => [], addEventListener() {}, documentElement: { lang: "", classList: element().classList } },
     localStorage: { getItem: () => language, setItem() {} },
@@ -35,16 +40,161 @@ function ui(language = "zh") {
   return { run: code => vm.runInContext(code, context), get, context, copied };
 }
 
+function agentPayload(text, overrides = {}) {
+  return { source: "note.txt", text, original_text: "Original", status: "pending", language: "zh",
+    revision: 1, candidate_sha256: "new-hash", revising: null, revisions: [], report: {
+      source: { kind: "text" }, action: { choice: "review", confidence: .8, probabilities: {} },
+      policy: { reasons: [] }, routing: { contains_code: false },
+      layers: { injection: { verdict: "benign", injection: 0, evidence: [] }, pii: { entities: [], counts: {} } },
+      handoff: { status: "review", text, changes: {}, reason: "edited_checked" }, usage: {}, total_ms: 1,
+    }, ...overrides };
+}
+
+test("refresh restores a failed edit and retry sends its original operation and version", async () => {
+  const app = ui();
+  const failed = agentPayload("Bound source", { revising: {
+    state: "failed", error: "failed", text: "Unsaved edit", request_id: "same-id", base_revision: 1,
+  } });
+  let state = failed;
+  let submitted;
+  app.context.fetch = async (url, request) => {
+    if (url.endsWith("/revision")) {
+      submitted = JSON.parse(request.body);
+      state = agentPayload("Unsaved edit", { revision: 2 });
+      return { ok: true, json: async () => ({ status: "bound" }) };
+    }
+    return { ok: true, json: async () => state };
+  };
+  app.run('agentReview = {ticket:"ticket", token:"token"}');
+  assert.equal(await app.run("refreshAgentReview()"), true);
+  assert.equal(app.get("handoff-edit-text").value, "Unsaved edit");
+  assert.equal(app.get("copy").disabled, true);
+  app.get("handoff-edit-text").value = "Changed after failure";
+  await app.get("error-retry").emit("click");
+  assert.equal(submitted.request_id, "same-id");
+  assert.equal(submitted.text, "Unsaved edit");
+  assert.equal(submitted.base_revision, 1);
+  assert.equal(app.run("lastText"), "Unsaved edit");
+  assert.equal(app.run("agentReview.revision"), 2);
+  assert.equal(app.get("confirm-copy").checked, false);
+});
+
+test("a lost revision response loads the committed version without starting another scan", async () => {
+  const app = ui();
+  let scans = 0;
+  app.context.fetch = async (url) => {
+    if (url.endsWith("/revision")) { scans++; throw new Error("response lost"); }
+    return { ok: true, json: async () => agentPayload("Committed edit", { revision: 2 }) };
+  };
+  app.run('agentReview={ticket:"ticket",token:"token",revision:1,status:"pending"}; revisionOp={request_id:"op",base_revision:1,text:"Committed edit"}');
+  assert.equal(await app.run("reviseTicket()"), true);
+  assert.equal(scans, 1);
+  assert.equal(app.run("lastText"), "Committed edit");
+  assert.equal(app.run("revisionOp"), null);
+});
+
+test("reopening a scanning review polls state without resubmitting paid work", async () => {
+  const app = ui();
+  let reads = 0;
+  app.context.location = { href: "http://127.0.0.1/?agent_input=ticket&review_token=token" };
+  app.context.setTimeout = fn => fn();
+  app.context.fetch = async (_url, init) => {
+    assert.equal(init.body, undefined);
+    reads++;
+    const state = reads === 1 ? agentPayload("Old", { revising: {
+      request_id: "running", base_revision: 1, text: "New", state: "scanning", error: null,
+    } }) : agentPayload("New", { revision: 2 });
+    return { ok: true, json: async () => state };
+  };
+  await app.run("loadAgentReview()");
+  assert.equal(reads, 2);
+  assert.equal(app.run("lastText"), "New");
+  assert.equal(app.run("revisionOp"), null);
+  assert.equal(app.get("confirm-copy").checked, false);
+});
+
+test("an unreadable server state keeps approval locked; abandon sends operation identity", async () => {
+  const app = ui();
+  app.context.fetch = async () => { throw new Error("offline"); };
+  app.run('agentReview={ticket:"ticket",token:"token",revision:1,status:"pending"}');
+  assert.equal(await app.run("refreshAgentReview()"), false);
+  app.get("confirm-copy").checked = true;
+  await app.run("decideAgentInput(true)");
+  assert.equal(app.get("copy").disabled, true);
+  let abandoned;
+  app.context.fetch = async (url, request) => {
+    if (url.endsWith("/abandon")) abandoned = JSON.parse(request.body);
+    return { ok: true, json: async () => agentPayload("Old bound source") };
+  };
+  app.run('agentReview.syncRequired=false; agentReview.revising={request_id:"op",state:"failed"}');
+  await app.get("agent-abandon").emit("click");
+  assert.equal(abandoned.request_id, "op");
+  assert.equal(abandoned.base_revision, 1);
+  assert.equal(app.get("confirm-copy").checked, false);
+});
+
+test("web revisions retain original and repeated edits with hashes, reports and export records", async () => {
+  const app = ui();
+  const initial = agentPayload("Original").report;
+  app.context.initial = initial;
+  app.run('lastReport=initial; lastText="Original"');
+  app.run('streamScan = async (_url, init) => ({...initial, handoff:{...initial.handoff,text:JSON.parse(init.body).text}})');
+  app.get("handoff-edit-text").value = "First edit";
+  await app.get("handoff-rescan").emit("click");
+  app.get("handoff-edit-text").value = "Second edit";
+  await app.get("handoff-rescan").emit("click");
+  const records = app.run("revisionRecord()");
+  assert.deepEqual(Array.from(records, r => [r.index, r.parent]), [[0, -1], [1, 0], [2, 1]]);
+  assert.deepEqual(Array.from(records, r => r.submitted_text), ["Original", "First edit", "Second edit"]);
+  for (const r of records) {
+    assert.match(r.submitted_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(r.candidate_sha256, r.submitted_sha256);
+    assert.ok(r.report);
+  }
+  let exported;
+  app.context.capture = text => { exported = JSON.parse(text); };
+  app.run('downloadBlob = (_name, text) => capture(text); exportJson()');
+  assert.equal(exported.revision_record.length, 3);
+  assert.match(app.run('markdownOf(lastReport,lastText)'), /修订记录/);
+});
+
+test("a failed web edit retries the captured version chain exactly once", async () => {
+  const app = ui();
+  app.context.initial = agentPayload("Original").report;
+  app.run('lastReport=initial; lastText="Original"; streamScan=async()=>{throw new Error("offline")}');
+  app.get("handoff-edit-text").value = "Edited";
+  await app.get("handoff-rescan").emit("click");
+  app.get("input").value = "Unrelated new input";
+  app.run('streamScan=async(_url,init)=>({...initial,handoff:{...initial.handoff,text:JSON.parse(init.body).text}})');
+  await app.get("error-retry").emit("click");
+  assert.deepEqual(Array.from(app.run("revisionRecord()"), r => r.submitted_text), ["Original", "Edited"]);
+});
+
+test("citation clicks locate repeated and overlapping Unicode evidence by offsets", async () => {
+  const app = ui();
+  const first = app.get("first"), second = app.get("second"), overlap = app.get("overlap");
+  first.dataset = { start: "2", end: "6" };
+  second.dataset = { start: "7", end: "9" };
+  overlap.dataset = { start: "9", end: "11" };
+  app.context.document.querySelectorAll = selector => selector === "#source mark.mark-inj" ? [first, second, overlap] : [];
+  app.run('lastText="📋 same same"; lastReport={}; reviewReports.set(lastReport,{zh:{facts:{findings:[{index:1,kind:"injection",start:7,end:11,quote:"same",source_quote:"same"}]}}})');
+  const ref = { dataset: { index: "1" } };
+  await app.get("detail-dialog").emit("click", { target: { closest: selector => selector === ".step-ref" ? ref : null } });
+  assert.equal(first.scrolled, undefined);
+  assert.equal(second.scrolled, true);
+  assert.equal(overlap.scrolled, true);
+});
+
 test("source highlights use code points after emoji and escape HTML", () => {
   const app = ui();
   assert.equal(app.run('paintSpans("📋 <bad>", [{start: 2, end: 7, cls: "inj"}])'),
-    '📋 <mark class="mark-inj">&lt;bad&gt;</mark>');
+    '📋 <mark class="mark-inj" data-start="2" data-end="7">&lt;bad&gt;</mark>');
 });
 
 test("overlapping evidence keeps both annotation types and localizes SDK labels", () => {
   const app = ui();
   const html = app.run('paintSpans("📋 <mail>", [{start:2,end:8,cls:"inj"},{start:3,end:7,cls:"pii"}])');
-  assert.match(html, /<mark class="mark-inj"><mark class="mark-pii">mail<\/mark><\/mark>/);
+  assert.match(html, /<mark class="mark-inj"[^>]*><mark class="mark-pii"[^>]*>mail<\/mark><\/mark>/);
   assert.doesNotMatch(html, /<mail>/);
   app.run('renderInjection({verdict:"injection",severity:"critical",injection:.995,categories:{"instruction override":.52,"tool misuse or data exfiltration":.44}})');
   assert.match(app.get("body-injection").innerHTML, /提示注入: 严重/);
@@ -181,12 +331,16 @@ test("Codex approval uses the review endpoint and exact hash, without copying to
   const app = ui("zh");
   let decisions = 0;
   app.context.fetch = async (url, request) => {
+    if (!url.endsWith("/decision")) return { ok: true, json: async () => ({
+      ...app.context.agentPayload, status: "released", revising: null, revisions: [], revision: 0,
+    }) };
     decisions++;
     assert.match(url, /api\/agent-inputs\/ticket\/decision/);
     assert.equal(JSON.parse(request.body).candidate_sha256, "hash-of-reviewed-copy");
     return { ok: true, json: async () => ({ status: "released" }) };
   };
-  app.run('agentReview = {ticket:"ticket", token:"human-token", source:"note.txt", status:"pending", candidate_sha256:"hash-of-reviewed-copy"}; renderAgentContext()');
+  app.context.agentPayload = agentPayload("Checked");
+  app.run('agentReview = {ticket:"ticket", token:"human-token", source:"note.txt", status:"pending", revision:0, candidate_sha256:"hash-of-reviewed-copy"}; renderAgentContext()');
   assert.equal(app.get("copy").disabled, true);
   await app.run("copySanitized()");
   assert.equal(decisions, 0);

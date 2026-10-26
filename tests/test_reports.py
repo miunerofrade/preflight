@@ -94,7 +94,6 @@ def test_zero_citation_falls_back_to_the_template():
 
 
 def test_findings_keep_offsets_and_flag_positions():
-    facts = generate_review.__wrapped__ if False else None
     from app.reports import review_facts
     report = {"source": {"kind": "url"},
               "action": {"choice": "review"},
@@ -104,6 +103,6 @@ def test_findings_keep_offsets_and_flag_positions():
 
     facts = review_facts(report)
     assert facts["findings"] == [
-        {"index": 1, "kind": "injection", "quote": "Ignore instructions", "start": 4, "end": 22},
+        {"index": 1, "kind": "injection", "quote": "Ignore instructions", "source_quote": "Ignore instructions", "start": 4, "end": 22},
         {"index": 2, "kind": "url_flag", "title": "Lookalike brand", "flag_index": 1},
     ]

@@ -69,12 +69,13 @@ function reportMarkdown(report, language = "en", reviewReport = null, revisions 
   if (report.risk?.malicious_probability != null) item(L.risk, percentage(report.risk.malicious_probability));
   item(L.usage, usage(report.usage, report.usage?.calls, report.total_ms));
   if (report.edit_chain?.rescanned_after_edit) item(L.editChain, L.editChainDetail);
+  if (revisions?.length) section(L.revisions);
   for (const r of revisions || []) {
     item(`${L.revision} #${r.index}`, r.created || "");
     item(L.revParent, String(r.parent ?? ""));
-    if (r.submitted_sha256) item(L.revSubmitted, `${r.submitted_sha256.slice(0, 16)}…`);
-    if (r.candidate_sha256) item(L.revCopy, `${r.candidate_sha256.slice(0, 16)}…`);
-    if (r.approved) item(`${L.revision} #${r.index}`, L.revApproved);
+    if (r.submitted_sha256) item(L.revSubmitted, r.submitted_sha256);
+    if (r.candidate_sha256) item(L.revCopy, r.candidate_sha256);
+    if (r.approved) item(`${L.revision} #${r.index}`, `${L.revApproved}${r.decided_at ? ": " + r.decided_at : ""}`);
   }
   if (reviewReport?.language === language) {
     section(L.review); lines.push(literal(reviewReport.generated.title), "", L.generatedNote);

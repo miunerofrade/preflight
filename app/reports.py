@@ -29,12 +29,12 @@ def review_facts(report: dict) -> dict:
     for item in (injection.get("evidence") or [])[:5]:
         quote = str(item.get("quote") or item.get("text") or "").strip()
         if quote:
-            findings.append({"kind": "injection", "quote": quote[:160],
+            findings.append({"kind": "injection", "quote": quote[:160], "source_quote": str(item.get("quote") or item.get("text") or ""),
                              "start": item.get("start"), "end": item.get("end")})
     for item in (script.get("evidence") or [])[:5]:
         quote = str(item.get("quote") or item.get("text") or "").strip()
         if quote:
-            findings.append({"kind": "script", "quote": quote[:160],
+            findings.append({"kind": "script", "quote": quote[:160], "source_quote": str(item.get("quote") or item.get("text") or ""),
                              "start": item.get("start"), "end": item.get("end")})
     for flag_index, flag in enumerate((url.get("flags") or [])[:5], 1):
         title = str(flag.get("title") or "").strip()
