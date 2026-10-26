@@ -1,10 +1,14 @@
 """Preflight - FastAPI backend serving the scan API and the single-page UI."""
 from __future__ import annotations
 
+import json
 import os
+import queue
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 from clocked_sdk import (
     AuthenticationError,
     ClockedError,
@@ -14,11 +18,11 @@ from clocked_sdk import (
     ValidationError,
 )
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .scanner import scan, scan_url
+from .scanner import compare_batch, scan, scan_url
 from .webcheck import summarize_url
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -69,6 +73,45 @@ def _guarded(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Clocked API error: {exc}")
 
 
+class FetchError(HTTPException):
+    """The target page could not be fetched; `code` lets the UI show a translated message."""
+
+    def __init__(self, detail: str, code: str, vars: dict[str, Any]) -> None:
+        super().__init__(status_code=502, detail=detail)
+        self.code = code
+        self.vars = vars
+
+
+def _stream(work: Callable[[Callable[[str], None]], dict[str, Any]]) -> StreamingResponse:
+    """Run a scan in a worker thread and stream NDJSON: one {"type": "step"} line as each
+    stage starts, then a final {"type": "result"} or {"type": "error"} line."""
+    events: queue.Queue = queue.Queue()
+
+    def emit(key: str) -> None:
+        events.put({"type": "step", "step": key})
+
+    def run() -> None:
+        try:
+            events.put({"type": "result", "data": _guarded(lambda: work(emit))})
+        except HTTPException as exc:
+            event = {"type": "error", "status": exc.status_code, "detail": exc.detail}
+            if isinstance(exc, FetchError):
+                event.update(code=exc.code, vars=exc.vars)
+            events.put(event)
+        except Exception as exc:
+            events.put({"type": "error", "status": 500, "detail": f"Scan failed: {exc}"})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=run, daemon=True).start()
+
+    def body():
+        while (event := events.get()) is not None:
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(body(), media_type="application/x-ndjson")
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(BASE_DIR / "static" / "index.html")
@@ -78,17 +121,19 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 @app.post("/api/scan")
-def run_scan(req: ScanRequest) -> dict[str, Any]:
+def run_scan(req: ScanRequest, stream: bool = False) -> Any:
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Paste some content first.")
     if len(text) > MAX_CHARS:
         raise HTTPException(status_code=400, detail=f"Content too long for one check ({MAX_CHARS:,} character limit).")
+    if stream:
+        return _stream(lambda emit: scan(text, progress=emit))
     return _guarded(lambda: scan(text))
 
 
 @app.post("/api/scan-file")
-async def run_scan_file(file: UploadFile = File(...)) -> dict[str, Any]:
+async def run_scan_file(file: UploadFile = File(...), stream: bool = False) -> Any:
     data = await file.read()
     name = file.filename or "upload"
     ctype = (file.content_type or "").lower()
@@ -97,14 +142,18 @@ async def run_scan_file(file: UploadFile = File(...)) -> dict[str, Any]:
     if len(data) > MAX_FILE_BYTES:
         raise HTTPException(status_code=400, detail="File is over the 10 MB limit.")
     if name.lower().endswith(".pdf") or "pdf" in ctype:
-        return _guarded(lambda: scan(pdf=data, source_name=name))
-    if ctype.startswith("image/"):
-        return _guarded(lambda: scan(images=[data], source_name=name))
-    raise HTTPException(status_code=400, detail="Only PDF and image files are supported.")
+        kwargs: dict[str, Any] = {"pdf": data}
+    elif ctype.startswith("image/"):
+        kwargs = {"images": [data]}
+    else:
+        raise HTTPException(status_code=400, detail="Only PDF and image files are supported.")
+    if stream:
+        return _stream(lambda emit: scan(**kwargs, source_name=name, progress=emit))
+    return _guarded(lambda: scan(**kwargs, source_name=name))
 
 
 @app.post("/api/scan-batch")
-def run_scan_batch(req: ScanBatchRequest) -> dict[str, Any]:
+def run_scan_batch(req: ScanBatchRequest, stream: bool = False) -> Any:
     items = [item.strip() for item in req.items if item.strip()]
     if not items:
         raise HTTPException(status_code=400, detail="No content to scan.")
@@ -114,9 +163,10 @@ def run_scan_batch(req: ScanBatchRequest) -> dict[str, Any]:
         if len(item) > MAX_CHARS:
             raise HTTPException(status_code=400, detail=f"Item {index + 1} is over the {MAX_CHARS:,} character limit.")
 
-    def batch() -> dict[str, Any]:
+    def batch(emit: Callable[[str], None] = lambda _key: None) -> dict[str, Any]:
         results = []
         for index, item in enumerate(items):
+            emit(f"item:{index}")
             report = scan(item)
             results.append({
                 "index": index,
@@ -138,19 +188,45 @@ def run_scan_batch(req: ScanBatchRequest) -> dict[str, Any]:
                 "total_ms": report["total_ms"],
                 "full": report,
             })
+        rank = {"block": 0, "review": 1, "allow": 2}
+        similarity = None
+        if len(items) >= 2:
+            emit("compare")
+            try:
+                similarity = compare_batch(items)
+            except ClockedError:
+                # grouping is an add-on: the per-item verdicts above still stand
+                similarity = {"groups": [], "conflicts": [], "failed": True}
+        # items that are the same content reworded share the worst verdict of their group
+        group_of: dict[int, int] = {}
+        for g, members in enumerate((similarity or {}).get("groups") or []):
+            for i in members:
+                group_of[i] = g
+        worst: dict[int, int] = {}
+        for r in results:
+            g = group_of.get(r["index"])
+            if g is not None:
+                worst[g] = min(worst.get(g, 2), rank[r["action"]["choice"]])
+        for r in results:
+            g = group_of.get(r["index"])
+            r["group"] = g
+            r["group_worst"] = None if g is None else ["block", "review", "allow"][worst[g]]
         results.sort(
             key=lambda r: (
-                {"block": 0, "review": 1, "allow": 2}[r["action"]["choice"]],
+                rank[r["group_worst"] or r["action"]["choice"]],
+                rank[r["action"]["choice"]],
                 -r["injection"]["score"],
             )
         )
-        return {"count": len(results), "results": results}
+        return {"count": len(results), "results": results, "similarity": similarity}
 
+    if stream:
+        return _stream(batch)
     return _guarded(batch)
 
 
 @app.post("/api/scan-url")
-def run_scan_url(req: ScanUrlRequest) -> dict[str, Any]:
+def run_scan_url(req: ScanUrlRequest, stream: bool = False) -> Any:
     url = req.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="Provide a URL.")
@@ -161,10 +237,22 @@ def run_scan_url(req: ScanUrlRequest) -> dict[str, Any]:
     # Local demo escape hatch: scanning private/loopback targets is blocked unless
     # PREFLIGHT_ALLOW_PRIVATE_URLS is set (needed to scan the bundled demo page).
     allow_private = os.environ.get("PREFLIGHT_ALLOW_PRIVATE_URLS", "").lower() in ("1", "true", "yes")
-    try:
-        summary = summarize_url(url, allow_private=allow_private)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:  # httpx network/HTTP errors
-        raise HTTPException(status_code=502, detail=f"Could not fetch the page: {exc}")
+
+    def fetch() -> dict[str, Any]:
+        try:
+            return summarize_url(url, allow_private=allow_private)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            raise FetchError(f"The site refused the request (HTTP {status}).", "fetchStatus", {"s": status})
+        except Exception as exc:  # network errors: DNS, TLS, timeouts
+            raise FetchError(f"Could not fetch the page: {exc}", "fetchFailed", {})
+
+    if stream:
+        def work(emit: Callable[[str], None]) -> dict[str, Any]:
+            emit("fetch")
+            return scan_url(url, fetch(), progress=emit)
+        return _stream(work)
+    summary = fetch()
     return _guarded(lambda: scan_url(url, summary))

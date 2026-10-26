@@ -222,6 +222,29 @@ class FakeClocked:
         self.calls.append(("extract", kw))
         return copy.deepcopy(EXTRACT)
 
+    def rerank(self, **kw):
+        self.calls.append(("rerank", kw))
+        n = len(kw["documents"])
+        results = [{"index": n - 1, "action": "use", "relevance_score": 0.99}]
+        results += [{"index": i, "action": "skip", "reason": "unrelated", "relevance_score": 0.01}
+                    for i in range(n - 1)]
+        return {"results": results, "usage": {"input_tokens": 50}, "timing": {"total_ms": 30}}
+
+    def compare(self, **kw):
+        self.calls.append(("compare", kw))
+        return copy.deepcopy(COMPARE)
+
+
+COMPARE = {
+    "pairs": [
+        {"a": "0", "b": "1", "relation": "same", "probabilities": {"same": 0.96}},
+        {"a": "0", "b": "2", "relation": "unrelated", "probabilities": {"unrelated": 0.99}},
+        {"a": "1", "b": "2", "relation": "unrelated", "probabilities": {"unrelated": 0.99}},
+        {"a": "2", "b": "3", "relation": "conflicting", "probabilities": {"conflicting": 0.88}},
+    ],
+    "timing": {"total_ms": 124},
+}
+
 
 EXTRACT = {
     "fields": {
@@ -238,13 +261,14 @@ FAKE_REP = {
 
 
 @pytest.fixture
-def fake():
+def fake(monkeypatch):
     def _install(**kwargs) -> FakeClocked:
         f = FakeClocked(**kwargs)
-        scanner_mod.Clocked = lambda: f  # type: ignore[assignment]
-        scanner_mod.reputation = lambda host, orgs, dl: {**copy.deepcopy(FAKE_REP), "seen": (host, orgs, dl)}
+        monkeypatch.setattr(scanner_mod, "Clocked", lambda: f)
+        monkeypatch.setattr(scanner_mod, "reputation", lambda host, orgs, dl: {**copy.deepcopy(FAKE_REP), "seen": (host, orgs, dl)})
         return f
 
+    _install()  # Tests that only inspect a report still need an isolated fake client.
     return _install
 
 
@@ -313,10 +337,12 @@ def test_usage_tokens_are_aggregated(fake):
     assert report["usage"]["output_tokens"] == 2 + 1 + 1 + 3 + 1
 
 
-def test_allow_action_for_clean_route(fake):
+def test_high_injection_cannot_be_overruled_by_model_allow(fake):
     f = fake(route="no_code", action="allow")
     report = scan(TEXT)
-    assert report["action"]["choice"] == "allow"
+    assert report["action"]["choice"] == "block"
+    assert report["action"]["model_choice"] == "allow"
+    assert report["action"]["overridden"]
     assert report["action"]["probabilities"]["allow"] == 0.97
 
 
@@ -334,7 +360,10 @@ def test_scan_url_runs_full_pipeline(fake):
     f = fake()
     report = scan_url(URL_SUMMARY["url"], URL_SUMMARY)
     kinds = [name for name, _ in f.calls]
-    assert kinds == ["extract", "decide", "injection", "script", "grounding", "decide"]
+    # injection, script and grounding run concurrently, so their relative order is not fixed
+    assert kinds[:2] == ["extract", "decide"]
+    assert sorted(kinds[2:5]) == ["grounding", "injection", "script"]
+    assert kinds[5:] == ["decide"]
     assert report["usage"]["calls"] == 6
     assert report["source"]["kind"] == "url"
     assert report["layers"]["impersonation"]["brand"]["choice"] == "impersonation"
@@ -362,7 +391,6 @@ def test_scan_url_skips_script_and_grounding_when_absent(fake):
     kinds = [name for name, _ in f.calls]
     assert kinds == ["decide", "injection", "decide"]
     assert report["layers"]["script"] is None
-    assert report["layers"]["identity"] is None
 
 
 def test_url_verdict_state_carries_flags_and_form(fake):
@@ -377,7 +405,7 @@ def test_url_verdict_state_carries_flags_and_form(fake):
 def test_url_guard_text_uses_visible_page_content(fake):
     f = fake()
     scan_url(URL_SUMMARY["url"], URL_SUMMARY)
-    guard_kwargs = f.calls[2][1]
+    guard_kwargs = next(kw for name, kw in f.calls if name == "injection")
     assert "LIMITED" in guard_kwargs["text"]
 
 
@@ -419,3 +447,59 @@ def test_scan_url_reports_malicious_probability_in_same_call(fake):
     assert "action" in final_questions and "site_risk" in final_questions
     assert report["risk"]["malicious_probability"] == 0.981
     assert report["risk"]["choice"] == "malicious_or_pirated"
+
+
+def test_scan_reports_progress_in_order(fake):
+    fake()
+    steps: list[str] = []
+    scan(TEXT, progress=steps.append)
+    assert steps == ["injection", "pii", "routing", "script", "verdict", "handoff"]
+
+
+def test_scan_url_reports_progress_in_order(fake):
+    fake()
+    steps: list[str] = []
+    scan_url(URL_SUMMARY["url"], URL_SUMMARY, progress=steps.append)
+    assert steps == ["extract", "reputation", "passages", "decide", "content", "verdict"]
+
+
+def test_short_page_skips_rerank(fake):
+    f = fake()
+    scan_url(URL_SUMMARY["url"], URL_SUMMARY)
+    assert "rerank" not in [name for name, _ in f.calls]
+
+
+def test_long_page_reranks_passages_and_feeds_them_to_decide(fake):
+    f = fake()
+    summary = copy.deepcopy(URL_SUMMARY)
+    filler = ["Our company has served customers since 1998 with care. " * 5] * 8
+    summary["page"]["passages"] = filler + ["Enter your password and card number within 24 hours or lose access."]
+    report = scan_url(summary["url"], summary)
+    kinds = [name for name, _ in f.calls]
+    assert kinds.index("rerank") < kinds.index("decide")
+    picked = report["layers"]["passages"]["picked"]
+    assert [p["index"] for p in picked] == [8]  # skipped passages are dropped
+    decide_state = next(kw for name, kw in f.calls if name == "decide")["state"]
+    assert "Enter your password and card number" in decide_state
+
+
+def test_compare_batch_groups_duplicates_and_lists_conflicts(fake):
+    from app.scanner import compare_batch
+    fake()
+    out = compare_batch(["a", "b", "c", "d"])
+    assert out["groups"] == [[0, 1]]
+    assert out["conflicts"] == [{"a": 2, "b": 3, "probability": 0.88}]
+
+
+def test_compare_batch_groups_reworded_copies_reported_as_overlapping(fake, monkeypatch):
+    from app.scanner import compare_batch
+    f = fake()
+    # real response shape for two reworded copies of one phishing email
+    monkeypatch.setattr(f, "compare", lambda **kw: {"pairs": [
+        {"a": "0", "b": "1", "relation": "overlapping", "probabilities": {"overlapping": 0.60}},
+        {"a": "0", "b": "2", "relation": "unrelated", "probabilities": {"unrelated": 0.99}},
+        {"a": "1", "b": "2", "relation": "unrelated", "probabilities": {"unrelated": 0.99}},
+    ]})
+    out = compare_batch(["a", "b", "c"])
+    assert out["groups"] == [[0, 1]]
+    assert out["conflicts"] == []

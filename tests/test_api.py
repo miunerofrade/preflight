@@ -17,6 +17,7 @@ def client():
 def stub_scan(monkeypatch):
     def _stub(impl):
         monkeypatch.setattr(main_mod, "scan", impl)
+        monkeypatch.setattr(main_mod, "compare_batch", lambda items: {"groups": [], "conflicts": [], "usage": {}, "ms": 1})
 
     return _stub
 
@@ -190,7 +191,7 @@ def test_scan_url_blocks_private_targets(client, monkeypatch):
         )
 
     monkeypatch.setattr(main_mod, "summarize_url", boom)
-    res = client.post("/api/scan-url", json={"url": "http://127.0.0.1:8000/static/demo/phish.html"})
+    res = client.post("/api/scan-url", json={"url": "http://127.0.0.1:8000/admin"})
     assert res.status_code == 400
     assert "non-public" in res.json()["detail"]
 
@@ -230,3 +231,30 @@ def test_scan_url_prepends_scheme_and_returns_report(client, monkeypatch):
     assert seen["url"] == "https://example.com/login"
     assert res.json()["source"]["kind"] == "url"
     assert res.json()["action"]["choice"] == "allow"
+
+
+def test_batch_reworded_duplicates_share_the_worst_verdict(client, stub_scan, monkeypatch):
+    stub_scan(lambda text: _report("block" if "bad" in text else "allow", 0.9 if "bad" in text else 0.1))
+    monkeypatch.setattr(main_mod, "compare_batch",
+                        lambda items: {"groups": [[0, 2]], "conflicts": [], "usage": {}, "ms": 1})
+    res = client.post("/api/scan-batch", json={"items": ["bad item", "other", "same thing reworded"]})
+    body = res.json()
+    by_index = {r["index"]: r for r in body["results"]}
+    assert by_index[2]["group"] == by_index[0]["group"] == 0
+    assert by_index[2]["group_worst"] == "block"
+    assert by_index[2]["action"]["choice"] == "allow"  # its own verdict is kept
+    assert [r["index"] for r in body["results"]][:2] == [0, 2]
+    assert by_index[1]["group"] is None
+
+
+def test_batch_survives_a_failed_compare(client, stub_scan, monkeypatch):
+    from clocked_sdk import ClockedError
+    stub_scan(lambda text: _report())
+
+    def boom(items):
+        raise ClockedError("compare down")
+
+    monkeypatch.setattr(main_mod, "compare_batch", boom)
+    res = client.post("/api/scan-batch", json={"items": ["a", "b"]})
+    assert res.status_code == 200
+    assert res.json()["similarity"]["failed"] is True

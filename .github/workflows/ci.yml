@@ -17,8 +17,11 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Run tests (mocked Clocked API - no key needed)
+      - name: Run unit tests and recorded-response replays (no key needed)
         run: uv run pytest -q
 
       - name: JS syntax check
-        run: node --check app/static/app.js
+        run: |
+          node --check app/static/app.js
+          node --check app/static/i18n.js
+          node --test tests/test_ui.cjs

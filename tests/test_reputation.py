@@ -50,7 +50,7 @@ def test_identity_mismatch_new_and_unranked_domain(monkeypatch):
     monkeypatch.setattr(rep, "_whois_created", lambda d: created)
     out = rep.reputation("uuycpro.com.cn", ["网易"], offers_download=True)
     titles = [f["title"] for f in out["flags"]]
-    assert any("does not own" in t for t in titles)
+    assert any("does not list" in t for t in titles)
     assert any("Newly registered" in t for t in titles)
     assert any("Tranco" in t for t in titles)
     assert out["flags"][0]["severity"] == "high"

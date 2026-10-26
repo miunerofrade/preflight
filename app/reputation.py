@@ -117,17 +117,19 @@ def _rdap_bootstrap() -> dict[str, str]:
     return {tld.lower(): urls[0] for tlds, urls in data.get("services", []) for tld in tlds}
 
 
-def _rdap_created(domain: str) -> dt.datetime | None:
+def _rdap_created(domain: str) -> tuple[dt.datetime, str] | None:
     base = _rdap_bootstrap().get(domain.rsplit(".", 1)[-1])
     if not base:
         return None
     with _client() as c:
-        res = c.get(base.rstrip("/") + "/domain/" + domain)
+        record_url = base.rstrip("/") + "/domain/" + domain
+        res = c.get(record_url)
     if res.status_code != 200:
         return None
     for event in res.json().get("events", []):
         if event.get("eventAction") == "registration":
-            return _parse_date(event.get("eventDate", ""))
+            created = _parse_date(event.get("eventDate", ""))
+            return (created, str(res.url)) if created else None
     return None
 
 
@@ -160,12 +162,16 @@ def domain_age(domain: str) -> dict:
     """{'created': iso|None, 'age_days': int|None, 'source': 'rdap'|'whois'|None}."""
     for source, fn in (("rdap", _rdap_created), ("whois", _whois_created)):
         try:
-            created = fn(domain)
+            result = fn(domain)
+            created, source_url = result if isinstance(result, tuple) else (result, None)
         except Exception:  # network / parse failures are "unknown", not risk
             created = None
         if created:
             age = (dt.datetime.now(dt.timezone.utc) - created).days
-            return {"created": created.date().isoformat(), "age_days": age, "source": source}
+            return {"created": created.date().isoformat(), "age_days": age, "source": source,
+                    "source_url": source_url,
+                    "server": WHOIS_SERVERS.get(domain.rsplit(".", 1)[-1]) if source == "whois" else None,
+                    "checked_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     return {"created": None, "age_days": None, "source": None}
 
 
@@ -253,6 +259,7 @@ def _norm(name: str) -> str:
 def official_domains(name: str) -> dict:
     """Look up an organization or product by name; return its Wikidata id and official
     domains. Products without a website fall back to their developer / owner's domains."""
+    checked_at = dt.datetime.now(dt.timezone.utc).isoformat()
     cleaned = NAME_NOISE.sub("", name).strip(" -|·")
     if not cleaned:
         return {"entity": None, "label": None, "domains": [], "via": None}
@@ -272,15 +279,16 @@ def official_domains(name: str) -> dict:
                 claims = _claims(c, hit["id"])
                 domains = _websites(claims)
                 if domains:
-                    return {"entity": hit["id"], "label": hit.get("label"), "domains": domains, "via": None}
+                    return {"entity": hit["id"], "label": hit.get("label"), "domains": domains, "via": None,
+                            "checked_at": checked_at}
                 for owner in _owner_ids(claims)[:3]:
                     owner_domains = _websites(_claims(c, owner))
                     if owner_domains:
                         return {"entity": hit["id"], "label": hit.get("label"),
-                                "domains": owner_domains, "via": owner}
+                                "domains": owner_domains, "via": owner, "checked_at": checked_at}
     except Exception:
         pass
-    return {"entity": None, "label": None, "domains": [], "via": None}
+    return {"entity": None, "label": None, "domains": [], "via": None, "checked_at": checked_at}
 
 
 def host_belongs_to(host: str, domains: list[str]) -> bool:
@@ -333,9 +341,10 @@ def reputation(host: str, claimed_orgs: list[str], offers_download: bool) -> dic
         what = "offers software downloads" if offers_download else "presents itself"
         flags.append({
             "severity": sev,
-            "title": f"Claims to be '{item['claimed']}' from a domain it does not own",
+            "title": f"'{item['claimed']}' does not list this domain",
             "detail": f"The page {what} as {item['claimed']}, whose official domains per Wikidata "
-                      f"({item['entity']}) are {', '.join(item['domains'])}; '{domain}' is not one of them.",
+                      f"({item['entity']}) are {', '.join(item['domains'])}; '{domain}' is not listed. "
+                      "Public records can be incomplete; this mismatch alone does not establish impersonation.",
         })
     if age["age_days"] is not None and age["age_days"] < NEW_DOMAIN_DAYS:
         flags.append({
@@ -352,4 +361,7 @@ def reputation(host: str, claimed_orgs: list[str], offers_download: bool) -> dic
             "detail": f"'{domain}' has no Tranco rank. Official vendor sites almost always rank; "
                       "on its own this only means the site is small.",
         })
-    return {"domain": domain, "age": age, "rank": rank, "identity": identity, "flags": flags}
+    return {"domain": domain, "age": age, "rank": rank, "identity": identity, "flags": flags,
+            "rank_status": "known" if rank else "not_ranked" if ranked_known else "unknown",
+            "rank_updated_at": dt.datetime.fromtimestamp(TRANCO_FILE.stat().st_mtime, dt.timezone.utc).isoformat()
+            if TRANCO_FILE.exists() else None}

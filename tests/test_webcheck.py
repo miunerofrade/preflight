@@ -185,3 +185,11 @@ def test_javascript_scheme_target_is_ignored():
     from app.webcheck import find_client_redirect
     assert find_client_redirect('<script>location.href="javascript:void(0)"</script>',
                                 "https://example.com/") is None
+
+
+def test_split_passages_groups_lines_and_caps_length():
+    from app.webcheck import PASSAGE_CHARS, split_passages
+    out = split_passages(["Home", "About", "x" * 1000, "", "Enter your password now"])
+    assert out[0].startswith("Home About")
+    assert all(len(p) <= PASSAGE_CHARS * 2 for p in out)
+    assert out[-1].endswith("Enter your password now")

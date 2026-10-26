@@ -4,6 +4,8 @@ executed, so analyzing a hostile page is safe."""
 from __future__ import annotations
 
 import ipaddress
+import datetime as dt
+import hashlib
 import re
 import socket
 import urllib.parse
@@ -54,6 +56,33 @@ SUSPICIOUS_TLDS = {
     "xyz", "top", "club", "online", "site", "icu", "cfd", "click", "live",
     "rest", "buzz", "surf", "monster", "quest", "sbs", "cam",
 }
+
+PASSAGE_CHARS = 300
+MAX_PASSAGES = 64
+
+
+def split_passages(lines: list[str]) -> list[str]:
+    """Group visible text lines into ~300-character passages. Purely mechanical: which
+    passages matter is decided later by Clocked rerank, not by a keyword list."""
+    passages: list[str] = []
+    buf = ""
+    for line in lines:
+        line = " ".join(line.split())
+        if not line:
+            continue
+        if buf and len(buf) + 1 + len(line) > PASSAGE_CHARS:
+            passages.append(buf)
+            buf = ""
+        buf = f"{buf} {line}".strip()
+        while len(buf) > PASSAGE_CHARS * 2:  # one very long line
+            passages.append(buf[:PASSAGE_CHARS])
+            buf = buf[PASSAGE_CHARS:]
+        if len(passages) >= MAX_PASSAGES:
+            break
+    if buf:
+        passages.append(buf)
+    return passages[:MAX_PASSAGES]
+
 
 # single-character homoglyphs commonly used in lookalike domains
 HOMOGLYPHS = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g", "$": "s", "@": "a"})
@@ -280,6 +309,7 @@ def parse_page(html: str, base_url: str) -> dict:
     script_srcs = [s["src"] for s in soup.find_all("script", src=True, limit=10)]
 
     body_text = " ".join(soup.get_text(" ", strip=True).split())[:4000]
+    passages = split_passages(soup.get_text("\n", strip=True).splitlines())
 
     return {
         "title": title[:200],
@@ -291,6 +321,7 @@ def parse_page(html: str, base_url: str) -> dict:
         "script_srcs": script_srcs,
         "script_blob": script_blob,
         "body_text": body_text,
+        "passages": passages,
         "base_url": base_url,
         "claims_text": " ".join(claims_text)[:3000],
         "download": {
@@ -334,6 +365,15 @@ def _assert_public_host(host: str) -> None:
             )
 
 
+class FetchedHTML(str):
+    """HTML that remains string-compatible, with a receipt for the actual response."""
+
+    def __new__(cls, html: str, snapshot: dict):
+        obj = super().__new__(cls, html)
+        obj.snapshot = snapshot
+        return obj
+
+
 def fetch_page(url: str, *, allow_private: bool = False) -> str:
     """Fetch a page's HTML without executing anything it contains."""
     parsed = urllib.parse.urlsplit(url)
@@ -363,7 +403,14 @@ def fetch_page(url: str, *, allow_private: bool = False) -> str:
         res.raise_for_status()
         if len(res.content) > MAX_HTML_BYTES:
             raise ValueError("Page is over the 2 MB analysis limit.")
-        return res.text
+        return FetchedHTML(res.text, {
+            "requested_url": url, "url": str(res.url),
+            "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "sha256": hashlib.sha256(res.content).hexdigest(),
+            "redirects": [{"from": str(h.url), "to": str(h.next_request.url) if h.next_request else
+                           urllib.parse.urljoin(str(h.url), h.headers.get("location", "")),
+                           "kind": "http", "status": h.status_code, "followed": True} for h in res.history],
+        })
 
 
 JS_REDIRECT = re.compile(
@@ -401,18 +448,26 @@ def summarize_url(url: str, *, allow_private: bool = False) -> dict:
     from .reputation import registrable_domain  # reputation imports this module
 
     page_html = fetch_page(url, allow_private=allow_private)
-    parsed = urllib.parse.urlsplit(url)
+    snapshot = getattr(page_html, "snapshot", {"requested_url": url, "url": url})
+    page_url = snapshot["url"]
+    parsed = urllib.parse.urlsplit(page_url)
     host = (parsed.hostname or "").lower()
     extra_flags: list[dict] = []
     redirect = None
 
-    target = find_client_redirect(page_html, url)
+    target = find_client_redirect(page_html, page_url)
     if target:
         target_host = (urllib.parse.urlsplit(target).hostname or "").lower()
         if registrable_domain(target_host) == registrable_domain(host):
             # same site: follow once, through the same SSRF-checked fetch
             page_html = fetch_page(target, allow_private=allow_private)
             redirect = {"to": target, "followed": True}
+            receipt = getattr(page_html, "snapshot", {"url": target})
+            snapshot = {**receipt, "requested_url": url, "redirects": [
+                *snapshot.get("redirects", []), {"from": page_url, "to": target, "kind": "client", "followed": True},
+                *receipt.get("redirects", [])]}
+            page_url = snapshot["url"]
+            host = (urllib.parse.urlsplit(page_url).hostname or "").lower()
         else:
             redirect = {"to": target, "followed": False}
             extra_flags.append({
@@ -423,7 +478,6 @@ def summarize_url(url: str, *, allow_private: bool = False) -> dict:
                           "such pages; the target was not fetched.",
             })
 
-    page_url = redirect["to"] if redirect and redirect["followed"] else url
     page = parse_page(page_html, page_url)
     claimed = brand_mentions(" ".join([page["title"], page["description"], *page["headings"], page["claims_text"]]))
     return {
@@ -431,7 +485,8 @@ def summarize_url(url: str, *, allow_private: bool = False) -> dict:
         "host": host,
         "page": page,
         "redirect": redirect,
-        "flags": url_flags(url) + page_flags(host, page, claimed) + extra_flags,
+        "snapshot": snapshot,
+        "flags": url_flags(page_url) + page_flags(host, page, claimed) + extra_flags,
         "brands_mentioned": claimed,
         "has_password_form": any(f["asks_password"] for f in page["forms"]),
     }
