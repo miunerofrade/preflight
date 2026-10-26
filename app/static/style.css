@@ -497,7 +497,11 @@ mark { border-radius: 4px; padding: 1px 0; color: inherit; }
 
 .toolbar-actions { display: flex; gap: 12px; flex-wrap: wrap; }
 
-.export-row { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
+.export-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.export-row .btn { width: 100%; }
+.review-text { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-16); line-height: 24px; }
+.report-error { color: var(--bad); padding-inline: var(--panel-inset); }
+@media (max-width: 600px) { .export-row { grid-template-columns: 1fr; } }
 
 .batch-head {
   display: grid;

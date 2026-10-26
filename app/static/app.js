@@ -223,112 +223,46 @@ function downloadBlob(filename, content, type) {
   URL.revokeObjectURL(url);
 }
 
-// exported reports stay in English: they are audit artifacts shared outside the UI
-function markdownOf(report, text) {
-  const lines = [];
-  const disposition = () => {
-    lines.push(`## Disposition policy (${report.policy?.version || "unknown"})`);
-    lines.push(`Model recommendation: ${report.action.model_choice || report.action.choice}; model confidence: ${pct(report.action.confidence)}.`);
-    for (const rule of report.policy?.reasons || []) lines.push(`- ${rule.code}: ${rule.action}`);
-    const handoff = report.handoff;
-    if (handoff) {
-      lines.push("", "## Prepared copy", `Status: ${handoff.status}; reason: ${handoff.reason}.`);
-      lines.push(`Removed ${handoff.changes.removed} instruction span(s); masked ${handoff.changes.masked} personal-data span(s).`);
-      if (handoff.verification) lines.push(`Recheck: ${handoff.verification.action.choice}; ${handoff.verification.usage.calls} calls (included in the report total).`);
-      if (handoff.status === "review") lines.push("Human review of the edited content is required before forwarding.");
-      if (handoff.text != null) lines.push("", ...handoff.text.split("\n").map((line) => `> ${line}`));
-      if (handoff.text != null && handoff.edits?.length) {
-        lines.push("", "### Edits against the original");
-        for (const edit of handoff.edits) {
-          lines.push(`- ${edit.kind}; source code points ${edit.start}–${edit.end}; copy ${edit.copy_start}–${edit.copy_end}`,
-            ...edit.before.split("\n").map(line => `> Before: ${esc(line)}`), `> After: ${esc(edit.after)}`);
-        }
-      }
+const reviewReports = new WeakMap();
+let reviewBusy = false;
+const currentReview = (report = lastReport, language = LANG) => reviewReports.get(report)?.[language] || null;
+
+function markdownOf(report, text, language = LANG) {
+  return reportMarkdown(report, language, currentReview(report, language));
+}
+
+function renderReview(review) {
+  return `<p class="detail-intro">${esc(t("report.generatedNote"))}</p>
+    <section class="detail-section"><h3>${esc(review.generated.title)}</h3></section>
+    <section class="detail-section"><h3>${esc(t("report.summary"))}</h3><p class="review-text">${esc(review.generated.summary)}</p></section>
+    <section class="detail-section"><h3>${esc(t("report.steps"))}</h3><p class="review-text">${esc(review.generated.review_steps)}</p></section>
+    <p class="record-foot">${esc(t("report.usage", { n: review.calls, ms: review.total_ms }))}</p>`;
+}
+
+async function generateReviewReport() {
+  if (!lastReport || reviewBusy || $("run").disabled) return;
+  if (currentReview()) { openDetail("review"); return; }
+  const report = lastReport, language = LANG;
+  reviewBusy = true;
+  $("generate-report").disabled = true;
+  $("generate-report").textContent = t("report.generating");
+  $("report-error").hidden = true;
+  try {
+    const review = await postJSON("/api/review-report", { report, language });
+    const cached = reviewReports.get(report) || {};
+    cached[language] = review;
+    reviewReports.set(report, cached);
+    if (lastReport === report && LANG === language) openDetail("review");
+  } catch (error) {
+    if (lastReport === report && LANG === language) {
+      $("report-error").textContent = t("report.failed");
+      $("report-error").hidden = false;
     }
-    lines.push("");
-  };
-  if (report.source && report.source.kind === "url") {
-    const u = report.url || {};
-    lines.push(`# Preflight URL report`);
-    lines.push("");
-    lines.push(`- Generated: ${new Date().toISOString()}`);
-    lines.push(`- URL: ${u.url}`);
-    lines.push(`- Verdict: **${report.action.choice.toUpperCase()}** (confidence ${pct(report.action.confidence)})`);
-    if (report.risk && report.risk.malicious_probability != null)
-      lines.push(`- Malicious / pirated site probability: ${pct(report.risk.malicious_probability)}`);
-    lines.push(`- Calls: ${report.usage.calls} ; tokens ${report.usage.input_tokens} in / ${report.usage.output_tokens} out ; ${report.total_ms} ms`);
-    lines.push("", "## Sources and retrieval receipt",
-      `- Requested URL: ${u.snapshot?.requested_url || u.url}`,
-      `- Analyzed URL: ${u.snapshot?.url || "unknown"}`,
-      `- Retrieved at: ${u.snapshot?.fetched_at || "unknown"}`,
-      `- Response SHA-256: ${u.snapshot?.sha256 || "unknown"}`);
-    for (const hop of u.snapshot?.redirects || []) lines.push(`- Redirect (${hop.kind}): ${hop.from} -> ${hop.to}`);
-    for (const claim of u.claims || []) lines.push(`- Page claim (${claim.status}): ${esc(claim.value)}; source quote: ${esc(claim.quote || "not located")}`);
-    for (const source of u.sources || []) lines.push(`- ${source.kind} (${source.status}): ${esc(source.value ?? source.domains?.join(", ") ?? "unknown")} — ${source.url || source.server || "no record URL"}; observed ${source.checked_at || "unknown"}`);
-    lines.push("");
-    lines.push(`## Deterministic flags`);
-    lines.push((u.flags || []).map((f) => `- [${f.severity}] ${f.title}: ${f.detail}`).join("\n") || "- none");
-    lines.push("");
-    const imp = report.layers.impersonation || {};
-    lines.push(`## Impersonation & intent (Clocked decide)`);
-    lines.push(`- brand_impersonation: ${imp.brand?.choice} (${pct(imp.brand?.confidence)})`);
-    lines.push(`- content_intent: ${imp.intent?.choice} (${pct(imp.intent?.confidence)})`);
-    lines.push("");
-    const inj = report.layers.injection || {};
-    lines.push(`## Guard — prompt injection on page content`);
-    lines.push(`Score ${pct(inj.injection)} ; verdict ${inj.verdict} ; severity ${inj.severity}`);
-    lines.push("");
-    const scr = report.layers.script;
-    lines.push(`## Inspect — inline scripts`);
-    lines.push(scr ? `Malicious ${pct(scr.malicious)} ; verdict ${scr.verdict} ; severity ${scr.severity}` : "No inline scripts found");
-    lines.push("");
-    const idn = report.layers.identity;
-    lines.push(`## Identity grounding`);
-    lines.push(idn ? JSON.stringify(idn.claims || idn, null, 2) : "No brand claims found on the page");
-    lines.push("");
-    const psg = report.layers.passages;
-    lines.push(`## Most suspicious passages (rerank)`);
-    if (psg && psg.picked && psg.picked.length) {
-      lines.push(`${psg.picked.length} of ${psg.count} passages selected`);
-      for (const p of psg.picked) lines.push(`> [${(p.score || 0).toFixed(2)}] ${p.text}`);
-    } else {
-      lines.push(psg ? `None of ${psg.count} passages looked suspicious` : "Page text is short; read in full, rerank not needed");
-    }
-    disposition();
-    return lines.join("\n");
+  } finally {
+    reviewBusy = false;
+    $("generate-report").disabled = $("run").disabled;
+    $("generate-report").textContent = t("btn.generateReport");
   }
-  lines.push(`# Preflight report`);
-  lines.push("");
-  lines.push(`- Generated: ${new Date().toISOString()}`);
-  if (report.source) lines.push(`- Source: ${report.source.kind}${report.source.name ? ` (${report.source.name})` : ""}`);
-  lines.push(`- Verdict: **${report.action.choice.toUpperCase()}** (confidence ${pct(report.action.confidence)})`);
-  lines.push(`- Calls: ${report.usage.calls} ; tokens ${report.usage.input_tokens} in / ${report.usage.output_tokens} out ; ${report.total_ms} ms`);
-  lines.push("");
-  const inj = report.layers.injection || {};
-  lines.push(`## Guard — prompt injection`);
-  lines.push(`Score ${pct(inj.injection)} ; verdict ${inj.verdict} ; severity ${inj.severity}`);
-  if (inj.evidence && inj.evidence.length) {
-    lines.push("");
-    for (const e of inj.evidence) lines.push(`> "${e.quote}" (${e.start}–${e.end})`);
-  }
-  lines.push("");
-  const scr = report.layers.script;
-  lines.push(`## Inspect — script safety`);
-  lines.push(scr ? `Malicious ${pct(scr.malicious)} ; verdict ${scr.verdict} ; severity ${scr.severity}` : `Not run${text === null ? " (file scan)" : " (no executable code)"}`);
-  lines.push("");
-  const pii = report.layers.pii || {};
-  lines.push(`## Protect — personal data`);
-  lines.push(`${(pii.entities || []).length} entities: ${(pii.counts ? Object.entries(pii.counts).map(([k, v]) => `${k}×${v}`).join(", ") : "none")}`);
-  lines.push("");
-  if (report.notes) for (const n of report.notes) lines.push(`_Note: ${n}_`);
-  if (report.pdf_inspection) {
-    const pdf = report.pdf_inspection;
-    lines.push("## PDF text-layer inspection", `Status: ${pdf.status}; pages ${pdf.pages_checked}/${pdf.pages}. No rendering, OCR, background or occlusion check.`);
-    for (const finding of pdf.findings) lines.push(`- ${finding.kind}; page ${finding.page ?? "metadata"}; bbox ${JSON.stringify(finding.bbox || null)}; ${finding.font_size ?? "n/a"} pt`, `> ${esc(finding.text)}`);
-    for (const entry of pdf.metadata) lines.push(`- Metadata ${entry.field}: ${esc(entry.value)}`);
-  }
-  disposition();
-  return lines.join("\n");
 }
 
 /* ---------- scans ---------- */
@@ -429,6 +363,8 @@ async function streamScan(url, init, steps) {
 const jsonInit = (body) => ({ headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 function setBusy(b) {
+  $("generate-report").disabled = b || reviewBusy;
+  $("report-error").hidden = true;
   const run = $("run");
   run.disabled = b;
   run.textContent = b ? t("btn.running") : t("btn.run");
@@ -847,6 +783,9 @@ function openDetail(kind) {
   } else if (kind === "edits" && lastReport?.handoff?.edits?.length) {
     title = t("diff.title");
     content = $("handoff-edits").innerHTML;
+  } else if (kind === "review" && currentReview()) {
+    title = t("report.title");
+    content = renderReview(currentReview());
   } else return;
   $("detail-title").textContent = title;
   $("detail-body").innerHTML = content;
@@ -991,7 +930,7 @@ async function copySanitized() {
 
 function exportJson() {
   if (!lastReport) return;
-  downloadBlob("preflight-report.json", JSON.stringify(lastReport, null, 2), "application/json");
+  downloadBlob("preflight-report.json", JSON.stringify({ ...lastReport, language: LANG, review_report: currentReview() }, null, 2), "application/json");
 }
 
 function exportMarkdown() {
@@ -1077,6 +1016,8 @@ updateCharcount();
 
 document.addEventListener("langchange", () => {
   closeDetail();
+  $("report-error").hidden = true;
+  $("generate-report").textContent = t(reviewBusy ? "report.generating" : "btn.generateReport");
   renderExamples();
   setMode(currentMode());
   setBusy($("run").disabled);
@@ -1113,6 +1054,7 @@ $("confirm-copy").addEventListener("change", () => {
 });
 $("export-json").addEventListener("click", exportJson);
 $("export-md").addEventListener("click", exportMarkdown);
+$("generate-report").addEventListener("click", generateReviewReport);
 $("mode-single").addEventListener("click", () => setMode("single"));
 $("mode-batch").addEventListener("click", () => setMode("batch"));
 $("mode-url").addEventListener("click", () => setMode("url"));

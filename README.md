@@ -141,7 +141,21 @@ SSRF-safe by construction: private/loopback/link-local targets are refused unles
 Awards entered: **Best Use of Protect/Guard/Inspect** (all three endpoints, full breadth) and
 **Best Overall App** — on top of the three safety endpoints, URL scans add `extract`, a
 dual-question `decide`, `rerank` and identity `grounding`, and batch triage adds `compare`:
-eight of the nine endpoints, each one changing what the app decides or shows.
+eight endpoints in the scan workflows, each one changing what the app decides or shows.
+An optional **Generate review report** button beside the JSON and Markdown exports uses
+the ninth endpoint, `fill`, to write a title, risk summary and human-review suggestions.
+It does not rerun detection or change the original disposition, evidence or copy approval.
+The draft opens in the shared detail dialog and is cached per scan and language. Reopening
+it makes no additional call. Generation usage is reported separately from scan usage;
+generation failure leaves both exports available. Only curated scan facts are sent to Fill,
+not the full original text or prepared copy. If no review suggestion is returned, a fixed
+manual-comparison reminder is used and identified as a template in the generated record.
+
+The page initially uses English and remembers language changes. Markdown headings and
+descriptions use the language selected at export time, while source quotations stay verbatim.
+JSON keeps stable technical keys and raw scan values, adds the selected `language`, and
+includes the generated `review_report` for that language when available. Markdown includes
+the same generated draft without replacing the fixed scan facts.
 **Best Use of Verify/Compare/Rerank** is also within reach: all three endpoints of that group
 are used (`grounding` and `rerank` in URL scans, `compare` in batch triage).
 

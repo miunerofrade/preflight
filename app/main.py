@@ -6,7 +6,7 @@ import os
 import queue
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import httpx
 from clocked_sdk import (
@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .scanner import compare_batch, scan, scan_url
 from .webcheck import summarize_url
+from .reports import ReportGenerationError, generate_review
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_CHARS = 20_000
@@ -53,6 +54,23 @@ class ScanBatchRequest(BaseModel):
 
 class ScanUrlRequest(BaseModel):
     url: str
+
+
+class ReviewReportRequest(BaseModel):
+    report: dict[str, Any]
+    language: Literal["en", "zh"] = "en"
+
+
+@app.post("/api/review-report")
+def run_review_report(req: ReviewReportRequest) -> dict:
+    if len(json.dumps(req.report, ensure_ascii=False)) > 250_000:
+        raise HTTPException(status_code=400, detail="Report is too large.")
+    try:
+        return _guarded(lambda: generate_review(req.report, req.language))
+    except ReportGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def _guarded(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:

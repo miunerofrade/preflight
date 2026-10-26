@@ -24,4 +24,5 @@ jobs:
         run: |
           node --check app/static/app.js
           node --check app/static/i18n.js
+          node --check app/static/reports.js
           node --test tests/test_ui.cjs

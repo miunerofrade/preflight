@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-function ui() {
+function ui(language = "zh") {
   const elements = new Map();
   const copied = [];
   function element() {
@@ -25,11 +25,11 @@ function ui() {
     URL,
     document: { getElementById: get, createElement: element, querySelector: get,
       querySelectorAll: () => [], addEventListener() {}, documentElement: { lang: "", classList: element().classList } },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: { getItem: () => language, setItem() {} },
     navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
     setTimeout() {},
   });
-  for (const file of ["i18n.js", "app.js"]) {
+  for (const file of ["i18n.js", "reports.js", "app.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "../app/static", file), "utf8"), context);
   }
   return { run: code => vm.runInContext(code, context), get, context, copied };
@@ -111,7 +111,7 @@ test("language catalogs cover the same keys, including every disposition rule", 
 });
 
 test("Markdown exports identify human review and never substitute a PII-only copy", () => {
-  const app = ui();
+  const app = ui("en");
   app.context.report = {
     action: { choice: "block", model_choice: "allow", confidence: 0.99 },
     source: { kind: "text" }, usage: { calls: 8, input_tokens: 20, output_tokens: 2 }, total_ms: 50,
@@ -122,9 +122,45 @@ test("Markdown exports identify human review and never substitute a PII-only cop
   };
   const markdown = app.run('markdownOf(report, "original")');
   assert.match(markdown, /Human review/);
-  assert.match(markdown, /Model recommendation: allow/);
+  assert.match(markdown, /Model recommendation: Allow/);
   assert.match(markdown, /Edited checked copy/);
   assert.doesNotMatch(markdown, /UNVERIFIED/);
+});
+
+test("English is the initial language and Markdown follows the selected language", () => {
+  const app = ui(null);
+  assert.equal(app.run("LANG"), "en");
+  app.context.report = { action: { choice: "review" }, source: { kind: "text" }, layers: {},
+    handoff: { status: "review", reason: "edited_checked", text: "Original source stays unchanged" } };
+  assert.match(app.run('markdownOf(report, null)'), /Preflight report/);
+  app.run('LANG = "zh"');
+  const markdown = app.run('markdownOf(report, null)');
+  assert.match(markdown, /安检报告/);
+  assert.match(markdown, /需确认/);
+  assert.match(markdown, /Original source stays unchanged/);
+  assert.doesNotMatch(markdown, /Human review/);
+});
+
+test("Fill report is cached per scan and language, escaped and never changes disposition", async () => {
+  const app = ui("en");
+  let calls = 0;
+  app.context.payload = { action: { choice: "block" }, layers: {}, handoff: { status: "withheld" } };
+  app.context.fetch = async (_url, request) => {
+    calls++;
+    assert.equal(JSON.parse(request.body).language, "en");
+    return { ok: true, json: async () => ({ language: "en", generated: {
+      title: '<img src=x onerror="bad()">', summary: "Review this", review_steps: "Verify the source" }, calls: 1, total_ms: 20 }) };
+  };
+  app.run("lastReport = payload");
+  await app.run("generateReviewReport()");
+  assert.match(app.get("detail-body").innerHTML, /&lt;img/);
+  assert.doesNotMatch(app.get("detail-body").innerHTML, /<img/);
+  assert.equal(app.context.payload.action.choice, "block");
+  assert.equal(app.context.payload.handoff.status, "withheld");
+  await app.run("generateReviewReport()");
+  assert.equal(calls, 1);
+  app.run('LANG = "zh"');
+  assert.equal(app.run("currentReview()"), null);
 });
 
 test("new evidence and edit markup escapes content and refuses non-web source links", () => {

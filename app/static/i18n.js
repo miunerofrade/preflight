@@ -197,6 +197,14 @@ const I18N = {
     "stats": "{c} 次 Clocked 调用\n输入 {i} / 输出 {o} 令牌\n总耗时 {ms} 毫秒",
     "btn.exportJson": "导出 JSON",
     "btn.exportMd": "导出 Markdown",
+    "btn.generateReport": "生成复核报告",
+    "report.generating": "生成中…",
+    "report.title": "复核报告",
+    "report.generatedNote": "以下为 AI 生成的复核草稿，需人工核对；最终处置和证据以扫描记录为准。生成内容会随当前语言的报告一起导出。",
+    "report.summary": "风险摘要",
+    "report.steps": "人工复核建议",
+    "report.usage": "报告生成：{n} 次 Fill 调用，耗时 {ms} 毫秒",
+    "report.failed": "报告生成失败。可重试，已有扫描结果和导出功能仍可使用。",
     "batch.routing": "已扫描 {n} 条，按风险排序。点击某一行查看完整报告。",
     "batch.openRow": "点开某一行后，完整报告会显示在下方。",
     "batch.h": "批量扫描结果：共 {n} 条",
@@ -451,6 +459,14 @@ const I18N = {
     "stats": "{c} Clocked calls\n{i} in / {o} out tokens\n{ms} ms total",
     "btn.exportJson": "Export JSON",
     "btn.exportMd": "Export Markdown",
+    "btn.generateReport": "Generate review report",
+    "report.generating": "Generating…",
+    "report.title": "Review report",
+    "report.generatedNote": "AI-generated review draft. Verify it against the scan verdict and evidence. It is included in exports for this language.",
+    "report.summary": "Risk summary",
+    "report.steps": "Human-review suggestions",
+    "report.usage": "Report generation: {n} Fill call, {ms} ms",
+    "report.failed": "Report generation failed. Retry when ready; scan results and exports remain available.",
     "batch.routing": "{n} items scanned, ranked by risk. Click a row for the full report.",
     "batch.openRow": "Full report renders below when you open a row.",
     "batch.h": "Batch results — {n} items",
@@ -514,7 +530,7 @@ const I18N = {
 };
 
 const LANG_KEY = "preflight-lang";
-let LANG = I18N[localStorage.getItem(LANG_KEY)] ? localStorage.getItem(LANG_KEY) : "zh";
+let LANG = I18N[localStorage.getItem(LANG_KEY)] ? localStorage.getItem(LANG_KEY) : "en";
 
 function t(key, vars = {}) {
   const s = I18N[LANG][key] ?? I18N.en[key] ?? key;
