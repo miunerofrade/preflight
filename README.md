@@ -2,11 +2,13 @@
 
 **Check unfamiliar content before Codex reads it.**
 
+*The original goes to the reviewer; the agent gets a checked copy.*
+
 Agents now read email, web pages, documents and code written by strangers. Preflight is the
-30-second check you run *before* that content reaches your agent: paste it (or drop a PDF /
-image, or give it a URL), get an **allow / review / block** verdict with character-exact
-evidence, local disposition rules, and a prepared text copy. Edits are checked again
-before the copy is offered; removing an instruction always requires human review.
+security gate between that content and your agent: paste it (or drop a PDF / image, or give
+it a URL), get an **allow / review / block** verdict with character-exact evidence, local
+disposition rules, and a prepared text copy. Edits are checked again before the copy is
+offered; removing an instruction always requires human review.
 
 Built for the **Clocked Build Challenge** (Oct 21 – Nov 10, 2026).
 
@@ -34,7 +36,33 @@ data flow and the release contract. No demonstration site or video is included.
 Prompt injection is the #1 risk in the OWASP Top 10 for LLM applications, and real zero-click
 agent leaks have already shipped in the wild. Meanwhile the standard workflow is still
 "copy suspicious content, paste it into your agent, hope for the best". Preflight makes the
-paranoid step automatic — for **any** kind of agent input, not one vertical.
+paranoid step automatic — for **any** kind of agent input, not one vertical — and what it
+hands the agent is a checked copy, not the raw original.
+
+## One gate, six steps
+
+Everything in this README serves one pass through the gate:
+
+1. **Content arrives** — a Codex task points at an email, a link, a PDF or a paste; it can
+   also arrive as a batch or an image. The agent has read nothing yet.
+2. **Screen** — Guard finds instructions written for machines rather than people, Inspect
+   reads code without ever running it, Protect finds personal data; Decide recommends
+   allow / review / block, and versioned local floors can raise that, never lower it.
+3. **Trace** — a URL gets a receipt: what the page claims to be (`extract`), what public
+   registries say it is (`grounding` over Wikidata, RDAP/WHOIS, Tranco), where it
+   redirected, when it was fetched and the SHA-256 of the response.
+4. **Prepare** — validated injection evidence is removed and personal data is masked into a
+   prepared copy; the copy is scanned again from scratch, and removing instructions always
+   needs a human.
+5. **Hand off** — the reviewer compares original and copy in one dialog, then approves the
+   exact copy hash; Codex reads only that approved snapshot through `preflight_read`.
+   Blocked or rejected tickets never ship text.
+6. **Keep the record** — the scan, the edits, the recheck and the receipts land in JSON and
+   Markdown exports; seven real-response cases replay offline for regression.
+
+Vertical competitors gate one document type for one business decision. Preflight gates
+everything an agent is about to read, and the artifact it produces — a checked, hash-pinned
+copy with its retrieval receipt — is what the agent actually consumes.
 
 ## Features
 
@@ -64,7 +92,7 @@ paranoid step automatic — for **any** kind of agent input, not one vertical.
   a hidden instruction, a private support ticket), plus malicious and benign scripts,
   batch triage and a live official-site URL control. Text examples are synthetic and
   available in English and Chinese; the URL example reads the current public page.
-- **Export** — every report downloads as JSON or a Markdown audit artifact.
+- **Export** — every scan downloads as JSON or a Markdown handoff record.
 - **Live progress, two languages** — scans stream each step as it starts; the UI switches
   between English and Chinese.
 

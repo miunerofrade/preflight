@@ -2,7 +2,7 @@
 "use strict";
 const REPORT_LABELS = {
   en: {
-    title: "Preflight report", generated: "Generated", source: "Source", verdict: "Verdict",
+    title: "Preflight handoff record", generated: "Generated", source: "Source", verdict: "Verdict",
     confidence: "Model confidence", usage: "Scan usage", calls: "calls", tokens: "tokens", time: "ms",
     policy: "Disposition policy", model: "Model recommendation", injection: "Prompt injection",
     script: "Script safety", pii: "Personal data", severity: "Severity", score: "Score", counts: "Counts",
@@ -24,7 +24,7 @@ const REPORT_LABELS = {
     legitimate: "Legitimate", impersonation: "Impersonation", credential_harvesting: "Credential harvesting", scam_or_bait: "Scam or bait", not_established: "Not established", risk: "Malicious / pirated site probability",
   },
   zh: {
-    title: "Preflight 安检报告", generated: "生成时间", source: "检查对象", verdict: "最终处置",
+    title: "Preflight 安检交接单", generated: "生成时间", source: "检查对象", verdict: "最终处置",
     confidence: "模型置信度", usage: "扫描用量", calls: "次调用", tokens: "token", time: "毫秒",
     policy: "处置规则", model: "模型建议", injection: "提示注入", script: "脚本安全", pii: "个人信息",
     severity: "严重程度", score: "分数", counts: "检出数量", evidence: "原文证据", sources: "来源与抓取记录",

@@ -146,10 +146,10 @@ test("English is the initial language and Markdown follows the selected language
   assert.equal(app.run("LANG"), "en");
   app.context.report = { action: { choice: "review" }, source: { kind: "text" }, layers: {},
     handoff: { status: "review", reason: "edited_checked", text: "Original source stays unchanged" } };
-  assert.match(app.run('markdownOf(report, null)'), /Preflight report/);
+  assert.match(app.run('markdownOf(report, null)'), /Preflight handoff record/);
   app.run('LANG = "zh"');
   const markdown = app.run('markdownOf(report, null)');
-  assert.match(markdown, /安检报告/);
+  assert.match(markdown, /安检交接单/);
   assert.match(markdown, /需确认/);
   assert.match(markdown, /Original source stays unchanged/);
   assert.doesNotMatch(markdown, /Human review/);
