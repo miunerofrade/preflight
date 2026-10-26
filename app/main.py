@@ -96,6 +96,26 @@ def decide_agent_input(ticket: str, req: AgentDecisionRequest, request: Request)
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+class AgentRevisionRequest(BaseModel):
+    review_token: str
+    report: dict[str, Any]
+
+
+@app.post("/api/agent-inputs/{ticket}/revision")
+def revise_agent_input(ticket: str, req: AgentRevisionRequest, request: Request) -> dict:
+    """Rebind the ticket to the freshly rescanned copy after a human edit, so the
+    approved hash always matches the report the reviewer is looking at."""
+    _agent_review_request(request)
+    try:
+        return agent_inputs.revise(ticket, req.review_token, req.report)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Invalid review token.")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 class ReviewReportRequest(BaseModel):
     report: dict[str, Any]
     language: Literal["en", "zh"] = "en"

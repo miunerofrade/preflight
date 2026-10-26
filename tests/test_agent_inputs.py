@@ -100,3 +100,32 @@ def test_file_check_releases_a_snapshot_and_blocked_url_does_not_scan_body(monke
         monkeypatch.setattr(agent_module, "scan", lambda *_a, **_k: pytest.fail("blocked URL must stop early"))
         blocked = store.check("https://example.com")
         assert blocked["status"] == "blocked" and "content" not in blocked
+
+
+def test_revision_rebinds_a_pending_ticket_to_the_rescanned_copy():
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    revised = store.revise(ticket, token, report("review", "Edited checked copy"))
+    assert revised["status"] == "pending"
+    review = store.review(ticket, token)
+    assert review["candidate_sha256"] == digest("Edited checked copy")
+    # approval now binds to the new copy; the old hash no longer releases anything
+    with pytest.raises(ValueError, match="hash"):
+        store.decide(ticket, token, digest("Checked copy"), True)
+    store.decide(ticket, token, digest("Edited checked copy"), True)
+    assert store.result(ticket)["content"] == "Edited checked copy"
+
+
+def test_revision_rejects_wrong_token_released_and_blocked_rescans():
+    store = AgentInputStore()
+    ticket, token = pending(store)
+    with pytest.raises(PermissionError):
+        store.revise(ticket, "wrong", report("review", "x"))
+    store.revise(ticket, token, report("review", "Edited"))
+    store.decide(ticket, token, digest("Edited"), True)
+    with pytest.raises(ValueError, match="pending"):
+        store.revise(ticket, token, report("review", "Again"))
+    second, second_token = pending(store)
+    store.revise(second, second_token, report("withheld", None))
+    assert store.review(second, second_token)["candidate_sha256"] is None
+    assert store.result(second)["status"] == "blocked"

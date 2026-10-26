@@ -55,3 +55,28 @@ def test_incomplete_fill_response_is_not_a_finished_report():
 
     with pytest.raises(ValueError, match="incomplete"):
         generate_review(sample(), "en", _client=Client())
+
+
+def test_citations_pointing_nowhere_fall_back_to_the_template():
+    class Client:
+        def fill(self, **request):
+            assert "numbered findings" in request["instructions"]
+            return {"fields": {"title": {"value": "T"}, "summary": {"value": "S"},
+                               "review_steps": {"value": "核实 [7] 所述的下载地址。"}},
+                    "usage": {"input_tokens": 5}}
+
+    result = generate_review(sample(), "en", _client=Client())
+    assert result["field_sources"]["review_steps"] == "template"
+    assert "[" not in result["generated"]["review_steps"]
+
+
+def test_valid_citations_survive():
+    class Client:
+        def fill(self, **_):
+            return {"fields": {"title": {"value": "T"}, "summary": {"value": "S"},
+                               "review_steps": {"value": "Re-check finding [1] before forwarding."}},
+                    "usage": {"input_tokens": 5}}
+
+    result = generate_review(sample(), "en", _client=Client())
+    assert result["field_sources"]["review_steps"] == "generated"
+    assert result["generated"]["review_steps"] == "Re-check finding [1] before forwarding."

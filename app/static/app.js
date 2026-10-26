@@ -21,6 +21,12 @@ let agentDecisionBusy = false;
 // last scan attempt, so a failed run can offer an in-place retry
 let lastFile = null;
 let lastAttempt = null;
+// the exact request behind the last attempt: retry replays this, not whatever the
+// input box happens to contain by then
+let lastRequest = null;
+// true right after a recheck of a human-edited copy, so the report, the conclusion
+// and the exports can say where this scan came from
+let editChain = null;
 
 function renderAgentContext() {
   if (!agentReview) return;
@@ -305,7 +311,7 @@ function renderReview(review) {
       const f = findings.find(x => x.index === Number(d));
       if (!f) return m;
       const tip = esc(String(f.quote || f.title || "")).replace(/"/g, "");
-      return `<abbr class="step-ref" title="${tip}">[${d}]</abbr>`;
+      return `<abbr class="step-ref" data-index="${d}" title="${tip}">[${d}]</abbr>`;
     });
     return `<li>${linked}</li>`;
   }).join("");
@@ -455,17 +461,43 @@ function setBusy(b) {
   }
 }
 
-async function runScan() {
-  const text = $("input").value.trim();
-  if (!text) { showError(t("err.empty")); return; }
-  if (text.length > 20000) { showError(t("err.tooLong")); return; }
+async function scanText(text) {
   lastAttempt = "text";
+  lastRequest = { kind: "text", text };
   setBusy(true);
   hideError();
   try {
     const data = await streamScan("/api/scan", jsonInit({ text }), STEPS.text);
+    if (editChain) data.edit_chain = editChain;
     lastReport = data; lastText = text;
     render(data, text);
+    return data;
+  } catch (err) {
+    showError(err.message);
+    return null;
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function runScan() {
+  const text = $("input").value.trim();
+  if (!text) { showError(t("err.empty")); return; }
+  if (text.length > 20000) { showError(t("err.tooLong")); return; }
+  editChain = null;
+  await scanText(text);
+}
+
+async function scanItems(items) {
+  batchItems = items;
+  lastAttempt = "batch";
+  lastRequest = { kind: "batch", items };
+  editChain = null;
+  setBusy(true);
+  hideError();
+  try {
+    const data = await streamScan("/api/scan-batch", jsonInit({ items }), [...items.map((_, i) => `item:${i}`), "compare"]);
+    renderBatch(data);
   } catch (err) {
     showError(err.message);
   } finally {
@@ -479,24 +511,15 @@ async function runBatch() {
   const items = raw.split(/^---\s*$/m).map((s) => s.trim()).filter(Boolean);
   if (items.length < 2) { showError(t("err.batchFew")); return; }
   if (items.length > 10) { showError(t("err.batchMany")); return; }
-  batchItems = items;
-  lastAttempt = "batch";
-  setBusy(true);
-  hideError();
-  try {
-    const data = await streamScan("/api/scan-batch", jsonInit({ items }), [...items.map((_, i) => `item:${i}`), "compare"]);
-    renderBatch(data);
-  } catch (err) {
-    showError(err.message);
-  } finally {
-    setBusy(false);
-  }
+  await scanItems(items);
 }
 
 async function scanFile(file) {
   if (file.size > MAX_FILE_BYTES) { showError(t("err.fileBig")); return; }
   lastFile = file;
   lastAttempt = "file";
+  lastRequest = { kind: "file", file };
+  editChain = null;
   setBusy(true);
   hideError();
   try {
@@ -555,6 +578,7 @@ function renderConclusion(data) {
   const flags = (data.url || {}).flags || [];
   if (flags.length) parts.push(t("concl.flags", { n: flags.length }));
   const h = data.handoff;
+  if (editChain) parts.unshift(t("concl.editChain"));
   if (h && ["ready", "review", "withheld"].includes(h.status)) {
     const c = h.changes || {};
     if (h.status === "withheld") parts.push(t("concl.copy.withheld", { reason: t(`handoff.reason.${h.reason}`) }));
@@ -926,11 +950,10 @@ function openDetail(kind) {
   document.documentElement.classList.add("modal-open");
 }
 
-async function runUrl() {
-  let url = $("input").value.trim();
-  if (!url) { showError(t("err.urlEmpty")); return; }
-  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+async function scanLink(url) {
   lastAttempt = "url";
+  lastRequest = { kind: "url", url };
+  editChain = null;
   setBusy(true);
   hideError();
   try {
@@ -942,6 +965,13 @@ async function runUrl() {
   } finally {
     setBusy(false);
   }
+}
+
+async function runUrl() {
+  let url = $("input").value.trim();
+  if (!url) { showError(t("err.urlEmpty")); return; }
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  await scanLink(url);
 }
 
 function renderUrl(data) {
@@ -1064,7 +1094,9 @@ async function copySanitized() {
 
 function exportJson() {
   if (!lastReport) return;
-  downloadBlob("preflight-report.json", JSON.stringify({ ...lastReport, language: LANG, review_report: currentReview() }, null, 2), "application/json");
+  const payload = { ...lastReport, language: LANG, review_report: currentReview() };
+  if (editChain) payload.edit_chain = editChain;
+  downloadBlob("preflight-report.json", JSON.stringify(payload, null, 2), "application/json");
 }
 
 function exportMarkdown() {
@@ -1214,26 +1246,50 @@ $("handoff-rescan").addEventListener("click", async () => {
   // count and a possible retry must all refer to the same text
   $("input").value = text;
   updateCharcount();
-  lastAttempt = "text";
-  setBusy(true);
-  hideError();
-  try {
-    const data = await streamScan("/api/scan", jsonInit({ text }), STEPS.text);
-    lastReport = data; lastText = text;
-    render(data, text);
-    verdictPanel().scrollIntoView({ behavior: "smooth" });
-  } catch (err) {
-    showError(err.message);
-  } finally {
-    setBusy(false);
+  editChain = { rescanned_after_edit: true };
+  const data = await scanText(text);
+  if (!data) return;
+  // an agent-review ticket must bind to the freshly checked copy; otherwise a
+  // later approval would release the old snapshot while the page shows this one
+  if (agentReview) {
+    try {
+      const result = await postJSON(`/api/agent-inputs/${encodeURIComponent(agentReview.ticket)}/revision`, {
+        review_token: agentReview.token, report: data,
+      });
+      agentReview = { ...agentReview, status: result.status, candidate_sha256: result.candidate_sha256 };
+      renderAgentContext();
+    } catch (err) {
+      showError(err.message);
+    }
   }
+  verdictPanel().scrollIntoView({ behavior: "smooth" });
 });
-// a failed attempt retries in place with the same inputs; it reruns the scan,
-// it does not resume from the last completed stage
+// a Fill suggestion may cite a numbered finding: clicking it closes the dialog and
+// takes the reviewer to the evidence (the annotated source, or the URL receipt)
+$("detail-dialog").addEventListener("click", (event) => {
+  const ref = event.target.closest(".step-ref");
+  if (!ref) return;
+  const finding = (currentReview()?.facts?.findings || []).find((x) => x.index === Number(ref.dataset.index));
+  if (!finding) return;
+  closeDetail();
+  if (finding.kind === "url_flag") { openDetail("evidence"); return; }
+  const panel = $("source").closest(".panel");
+  if (panel.hidden) return;
+  panel.scrollIntoView({ behavior: "smooth" });
+  panel.classList.remove("locate-flash");
+  requestAnimationFrame(() => panel.classList.add("locate-flash"));
+});
+
+// a failed attempt retries in place by replaying the exact request that failed;
+// it reruns the scan, it does not resume from the last completed stage
 $("error-retry").addEventListener("click", () => {
   hideError();
-  if (lastAttempt === "file" && lastFile) scanFile(lastFile);
-  else runCurrent();
+  const r = lastRequest;
+  if (!r) return;
+  if (r.kind === "text") scanText(r.text);
+  else if (r.kind === "url") scanLink(r.url);
+  else if (r.kind === "batch") scanItems(r.items);
+  else if (r.kind === "file" && r.file) scanFile(r.file);
 });
 $("mode-single").addEventListener("click", () => setMode("single"));
 $("mode-batch").addEventListener("click", () => setMode("batch"));

@@ -17,6 +17,7 @@ const REPORT_LABELS = {
     draft: "Edited draft: not approved for forwarding", review: "Generated review draft", summary: "Risk summary",
     steps: "Human-review suggestions", generatedNote: "Generated notes require human review. The scan verdict and source evidence below remain authoritative.",
     generationUsage: "Report generation usage", unknown: "Unknown", record: "Record", quote: "Source quote",
+    editChain: "Rescanned after a human edit", editChainDetail: "This scan re-checked a human-edited version of the previous prepared copy.",
     allow: "Allow", block: "Block", reviewAction: "Review", ready: "Ready", withheld: "Withheld", unavailable: "Report only",
     text: "Text", image: "Image", urlKind: "URL", person: "Person", email: "Email", phone: "Phone", address: "Address",
     benign: "Benign", injectionValue: "Injection", suspicious: "Suspicious", malicious: "Malicious",
@@ -37,6 +38,7 @@ const REPORT_LABELS = {
     range: "原文字符位置", draft: "处理稿：尚未获准转交", review: "生成的复核报告草稿", summary: "风险摘要",
     steps: "人工复核建议", generatedNote: "生成内容需人工核对，判定和证据以以下扫描记录为准。",
     generationUsage: "报告生成用量", unknown: "未知", record: "记录", quote: "原文引用",
+    editChain: "人工修改后重扫", editChainDetail: "本扫描是对上一份处理稿人工修改后的重新检查。",
     allow: "通过", block: "拦截", reviewAction: "需确认", ready: "可复制", withheld: "待复核", unavailable: "仅提供报告",
     text: "文本", image: "图片", urlKind: "网址", person: "姓名", email: "邮箱", phone: "电话", address: "地址",
     benign: "无害", injectionValue: "提示注入", suspicious: "可疑", malicious: "恶意",
@@ -62,6 +64,7 @@ function reportMarkdown(report, language = "en", reviewReport = null) {
   item(L.verdict, translate(action.choice)); item(L.confidence, percentage(action.confidence));
   if (report.risk?.malicious_probability != null) item(L.risk, percentage(report.risk.malicious_probability));
   item(L.usage, usage(report.usage, report.usage?.calls, report.total_ms));
+  if (report.edit_chain?.rescanned_after_edit) item(L.editChain, L.editChainDetail);
   if (reviewReport?.language === language) {
     section(L.review); lines.push(literal(reviewReport.generated.title), "", L.generatedNote);
     lines.push("", `### ${L.summary}`, "", literal(reviewReport.generated.summary));

@@ -42,6 +42,18 @@ class AgentInput:
     approved: bool = False
 
 
+def _candidate_and_status(report: dict) -> tuple[str | None, str]:
+    """The checkable copy and ticket status a scan report implies (shared by add/revise)."""
+    handoff = report.get("handoff") or {}
+    candidate = handoff.get("text")
+    action = (report.get("action") or {}).get("choice")
+    status = ("released" if handoff.get("status") == "ready" and action == "allow" else "pending") if (
+        isinstance(candidate, str) and handoff.get("status") in {"ready", "review"}) else "blocked"
+    if status == "blocked":
+        candidate = None
+    return candidate, status
+
+
 class AgentInputStore:
     def __init__(self, root: Path = ROOT, *, ttl: int = 1800, capacity: int = 32):
         self.root = root.resolve()
@@ -134,12 +146,7 @@ class AgentInputStore:
         return self.add(source, text, report, language)
 
     def add(self, source: str, text: str, report: dict, language: str) -> dict:
-        handoff = report.get("handoff") or {}
-        candidate = handoff.get("text")
-        status = ("released" if handoff.get("status") == "ready" and report["action"]["choice"] == "allow" else "pending") if (
-            isinstance(candidate, str) and handoff.get("status") in {"ready", "review"}) else "blocked"
-        if status == "blocked":
-            candidate = None
+        candidate, status = _candidate_and_status(report)
         item = AgentInput(secrets.token_urlsafe(24), secrets.token_urlsafe(32), time.monotonic(), language,
                           source, text, report, candidate, digest(candidate) if candidate is not None else None, status)
         with self._lock:
@@ -178,6 +185,24 @@ class AgentInputStore:
                     "candidate_sha256": item.candidate_sha256, "status": item.status, "language": item.language,
                     "receipt": {"source_sha256": digest(item.text), "copy_sha256": item.candidate_sha256,
                                 "human_approved": item.approved}}
+
+    def revise(self, ticket: str, token: str, report: dict) -> dict:
+        """Rebind a pending ticket to a freshly rescanned copy after a human edit.
+        The new candidate, its hash and the status replace the old ones, so a later
+        approval can never release a version other than the one now on screen."""
+        with self._lock:
+            item = self._get(ticket)
+            if not secrets.compare_digest(item.review_token.encode("utf-8"), token.encode("utf-8")):
+                raise PermissionError("Invalid review token.")
+            if item.status != "pending":
+                raise ValueError("Only a pending ticket can be revised.")
+            candidate, status = _candidate_and_status(report)
+            item.report = report
+            item.candidate = candidate
+            item.candidate_sha256 = digest(candidate) if candidate is not None else None
+            item.status = status
+            item.approved = False
+            return {"status": item.status, "candidate_sha256": item.candidate_sha256}
 
     def decide(self, ticket: str, token: str, candidate_sha256: str, approve: bool) -> dict:
         with self._lock:

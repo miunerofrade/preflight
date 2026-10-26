@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import time
 from typing import Any
 
@@ -98,6 +99,14 @@ def generate_review(report: dict, language: str, *, _client: Any = None) -> dict
         else:
             field_sources[key] = "generated"
         generated[key] = value.strip()
+    # a citation that points at no listed finding would mislead the reviewer; fall
+    # back to the fixed template instead of shipping an unverifiable reference
+    steps = generated["review_steps"]
+    cited = {int(m) for m in re.findall(r"\[(\d+)\]", steps)}
+    if cited and (not facts["findings"] or max(cited) > len(facts["findings"])):
+        generated["review_steps"] = ("请对照原文核对扫描判定与副本状态，再决定后续处置。" if language == "zh" else
+                                     "Compare the original source with the scan disposition and copy status before deciding the next action.")
+        field_sources["review_steps"] = "template"
     return {"language": language, "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "facts": facts, "generated": generated, "field_sources": field_sources, "usage": result.get("usage") or {},
             "calls": 1, "total_ms": round((time.perf_counter() - started) * 1000)}

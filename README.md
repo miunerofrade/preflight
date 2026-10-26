@@ -25,6 +25,8 @@ snapshot. It cannot approve a ticket and blocked results never include source te
 
 The server starts its own loopback review page, so no separately launched web service is
 needed. Tickets remain in memory for at most 30 minutes and disappear on disconnect.
+If the reviewer edits the prepared copy on that page and rechecks it, the ticket is rebound
+to the new copy and its hash, so approval always releases exactly what the reviewer sees.
 Codex receives only the status and usable content or a review link; detailed reports
 remain on the review page. The existing web interface and exports remain available. This workflow is cooperative;
 it does not intercept arbitrary Codex shell/browser reads. See
@@ -100,9 +102,12 @@ the same screening and a full record.
 - **Edit the copy, recheck in place** — the copy panel opens an editor over the prepared
   text; rechecking runs a full new scan over the edited text, and the previous
   confirmation expires with the new result. A wholesale script replacement says so
-  explicitly: the copy keeps only the replacement marker.
-- **Retry a failed scan in place** — errors offer a retry with the same inputs; the retry
-  reruns the scan, it does not resume from the last completed stage.
+  explicitly: the copy keeps only the replacement marker. The report, its exports and the
+  conclusion say that this scan followed a human edit; on an agent-review page the ticket
+  is rebound to the new copy, so the approved hash always matches what is on screen.
+- **Retry a failed scan in place** — errors offer a retry that replays the exact failed
+  request, not whatever the input box contains by then. The retry reruns the scan; it
+  does not resume from the last completed stage.
 - **One-click examples** — three primary examples (ordinary notes, a project update with
   a hidden instruction, a private support ticket), plus malicious and benign scripts,
   batch triage and a live official-site URL control. Text examples are synthetic and
@@ -213,10 +218,11 @@ The draft opens in the shared detail dialog and is cached per scan and language.
 it makes no additional call. Generation usage is reported separately from scan usage;
 generation failure leaves both exports available. Only curated scan facts are sent to Fill,
 not the full original text or prepared copy. The scan facts include numbered findings;
-generated steps cite them as [2]-style references and each citation shows the finding as
-a tooltip, so a suggestion points at the evidence it is about. If no review suggestion is
-returned, a fixed manual-comparison reminder is used and identified as a template in the
-generated record.
+generated steps cite them as [2]-style references, each citation carries the finding as a
+tooltip and clicking it takes the reviewer to the evidence, and a citation that points at
+no listed finding falls back to the fixed template instead of shipping an unverifiable
+reference. If no review suggestion is returned, a fixed manual-comparison reminder is used
+and identified as a template in the generated record.
 
 The page initially uses English and remembers language changes. Markdown headings and
 descriptions use the language selected at export time, while source quotations stay verbatim.
