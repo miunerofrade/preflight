@@ -318,6 +318,8 @@ def reputation(host: str, claimed_orgs: list[str], offers_download: bool) -> dic
     established = bool(rank and rank <= ESTABLISHED_RANK and (age["age_days"] or 0) >= ESTABLISHED_DAYS)
     if established and mismatched:
         names = ", ".join(i["claimed"] for i in mismatched)
+        for item in mismatched:
+            item["weak"] = True
         flags.append({
             "severity": "low",
             "title": f"'{names}' does not list this domain",

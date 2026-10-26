@@ -160,3 +160,28 @@ def test_redirect_to_private_host_is_refused(monkeypatch):
     monkeypatch.setattr(webcheck.httpx, "Client", client_with_mock)
     with pytest.raises(ValueError, match="not allowed"):
         webcheck.fetch_page("http://public.example/")
+
+
+def test_client_redirect_shell_is_detected():
+    from app.webcheck import find_client_redirect
+    html = ('<html><head><title></title><script>window.location.href="https://im.qq.com/index"'
+            '</script></head><body></body></html>')
+    assert find_client_redirect(html, "https://im.qq.com/") == "https://im.qq.com/index"
+
+
+def test_meta_refresh_relative_target():
+    from app.webcheck import find_client_redirect
+    html = '<meta http-equiv="refresh" content="0; url=/home">'
+    assert find_client_redirect(html, "https://example.com/") == "https://example.com/home"
+
+
+def test_page_with_content_is_not_a_redirect_shell():
+    from app.webcheck import find_client_redirect
+    html = '<body><h1>Welcome</h1><script>if(x){location.href="/a"}</script></body>'
+    assert find_client_redirect(html, "https://example.com/") is None
+
+
+def test_javascript_scheme_target_is_ignored():
+    from app.webcheck import find_client_redirect
+    assert find_client_redirect('<script>location.href="javascript:void(0)"</script>',
+                                "https://example.com/") is None

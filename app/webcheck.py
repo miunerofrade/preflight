@@ -366,18 +366,72 @@ def fetch_page(url: str, *, allow_private: bool = False) -> str:
         return res.text
 
 
+JS_REDIRECT = re.compile(
+    r"""(?:window\.|document\.|top\.|self\.)?location(?:\.href)?\s*=\s*["']([^"']+)["']"""
+    r"""|location\.(?:replace|assign)\(\s*["']([^"']+)["']\s*\)""",
+    re.IGNORECASE,
+)
+META_REFRESH = re.compile(
+    r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]*content=["'][^"']*url=([^"'>\s]+)""",
+    re.IGNORECASE,
+)
+REDIRECT_SHELL_CHARS = 2000  # only near-empty pages count as redirect shells
+
+
+def find_client_redirect(html: str, base_url: str) -> str | None:
+    """Spot a static client-side redirect (JS location assignment or meta refresh) on
+    an otherwise empty page. Read as text only; nothing is executed."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.extract()
+    if len(soup.get_text(" ", strip=True)) > 0 or len(html) > REDIRECT_SHELL_CHARS:
+        return None
+    m = META_REFRESH.search(html) or JS_REDIRECT.search(html)
+    if not m:
+        return None
+    target = next(g for g in m.groups() if g)
+    target = urllib.parse.urljoin(base_url, target.strip())
+    if urllib.parse.urlsplit(target).scheme not in ("http", "https"):
+        return None
+    return target
+
+
 def summarize_url(url: str, *, allow_private: bool = False) -> dict:
     """Fetch + parse + deterministic flags in one call (no Clocked involvement)."""
+    from .reputation import registrable_domain  # reputation imports this module
+
     page_html = fetch_page(url, allow_private=allow_private)
     parsed = urllib.parse.urlsplit(url)
     host = (parsed.hostname or "").lower()
-    page = parse_page(page_html, url)
+    extra_flags: list[dict] = []
+    redirect = None
+
+    target = find_client_redirect(page_html, url)
+    if target:
+        target_host = (urllib.parse.urlsplit(target).hostname or "").lower()
+        if registrable_domain(target_host) == registrable_domain(host):
+            # same site: follow once, through the same SSRF-checked fetch
+            page_html = fetch_page(target, allow_private=allow_private)
+            redirect = {"to": target, "followed": True}
+        else:
+            redirect = {"to": target, "followed": False}
+            extra_flags.append({
+                "severity": "medium",
+                "title": "Script redirect to another domain",
+                "detail": f"This page is an empty shell whose script sends visitors to '{target}' "
+                          f"on a different domain ({target_host}). Phishing kits often hop through "
+                          "such pages; the target was not fetched.",
+            })
+
+    page_url = redirect["to"] if redirect and redirect["followed"] else url
+    page = parse_page(page_html, page_url)
     claimed = brand_mentions(" ".join([page["title"], page["description"], *page["headings"], page["claims_text"]]))
     return {
         "url": url,
         "host": host,
         "page": page,
-        "flags": url_flags(url) + page_flags(host, page, claimed),
+        "redirect": redirect,
+        "flags": url_flags(url) + page_flags(host, page, claimed) + extra_flags,
         "brands_mentioned": claimed,
         "has_password_form": any(f["asks_password"] for f in page["forms"]),
     }

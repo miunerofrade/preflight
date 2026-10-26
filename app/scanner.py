@@ -296,6 +296,10 @@ def _url_verdict_state(summary: dict, layers: dict) -> str:
         if item.get("matches") is True:
             lines.append(f"Claimed identity '{item['claimed']}': the host is on its official domains "
                          f"({', '.join(item['domains'])}).")
+        elif item.get("matches") is False and item.get("weak"):
+            lines.append(f"Claimed identity '{item['claimed']}': public records list "
+                         f"{', '.join(item['domains'])} but not this domain; the domain itself is long-established "
+                         "and globally popular, and large groups run many domains, so this is weak evidence.")
         elif item.get("matches") is False:
             lines.append(f"Claimed identity '{item['claimed']}': the host is NOT on its official domains "
                          f"({', '.join(item['domains'])}).")
@@ -317,6 +321,8 @@ def _identity_reference(host: str, rep: dict) -> str:
     age = rep.get("age") or {}
     if age.get("created"):
         lines.append(f"{domain} was registered on {age['created']}.")
+    if rep.get("rank"):
+        lines.append(f"{domain} ranks #{rep['rank']} among the most visited sites worldwide (Tranco).")
     return " ".join(lines)
 
 
