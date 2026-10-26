@@ -18,30 +18,45 @@ let batchItems = [];
 let lastView = null;
 let agentReview = null;
 let agentDecisionBusy = false;
+// one in-flight or failed ticket revision: {request_id, text}; retries reuse it
+let revisionOp = null;
+let revisionBusy = false;
 // last scan attempt, so a failed run can offer an in-place retry
 let lastFile = null;
 let lastAttempt = null;
 // the exact request behind the last attempt: retry replays this, not whatever the
 // input box happens to contain by then
 let lastRequest = null;
-// true right after a recheck of a human-edited copy, so the report, the conclusion
-// and the exports can say where this scan came from
+// structured record of copy edits on this page (web scans keep it in-session only):
+// { revisions: [{index, parent, submitted_sha256, created_at}] }
 let editChain = null;
+
+const revisionRecord = () => (agentReview ? agentReview.revisions : editChain?.revisions) || null;
 
 function renderAgentContext() {
   if (!agentReview) return;
   $("agent-context").hidden = false;
   $("agent-source").textContent = agentReview.source;
-  $("agent-state").textContent = t(`agent.${agentReview.status}`);
-  $("agent-state").className = agentReview.status === "pending" ? "chip-warn" : "";
+  const revising = agentReview.revising;
+  const revisingState = revisionBusy || revising?.state === "scanning" ? "scanning"
+    : revising?.state === "failed" ? "failed" : null;
+  $("agent-state").textContent = revisingState === "scanning" ? t("agent.revising")
+    : revisingState === "failed" ? t("agent.reviseFailed")
+    : t(`agent.${agentReview.status}`);
+  $("agent-state").className = agentReview.status === "pending" || revisingState ? "chip-warn" : "";
   $("agent-url-evidence").hidden = !lastReport?.url_report;
   const pending = agentReview.status === "pending";
+  const locked = agentDecisionBusy || revisionBusy || !!revisingState;
   $("copy").textContent = t("agent.approve");
   $("copy").hidden = !pending;
-  $("copy").disabled = agentDecisionBusy || !$("confirm-copy").checked;
+  $("copy").disabled = locked || !$("confirm-copy").checked;
   $("agent-reject").hidden = !pending;
-  $("agent-reject").disabled = agentDecisionBusy;
-  $("handoff-confirm").hidden = !pending;
+  $("agent-reject").disabled = locked;
+  // an unresolved revision freezes the previously bound copy: no approve, no reject,
+  // only an explicit give-up
+  $("agent-abandon").hidden = !revisingState || agentReview.revising?.state === "scanning";
+  $("agent-abandon").disabled = revisionBusy;
+  $("handoff-confirm").hidden = !pending || locked;
   if (!pending) $("handoff-status").hidden = true;
 }
 
@@ -66,17 +81,33 @@ async function loadAgentReview() {
   const ticket = params.get("agent_input"), token = params.get("review_token");
   if (!ticket || !token) return;
   $("input-panel").hidden = true;
+  agentReview = { ticket, token };
+  await refreshAgentReview();
+}
+
+// fetch the latest ticket state from the server and render it; a page refresh must
+// restore the newest bound version, never the original text with a newer report
+async function refreshAgentReview() {
   try {
-    const response = await fetch(`/api/agent-inputs/${encodeURIComponent(ticket)}?review_token=${encodeURIComponent(token)}`, { cache: "no-store" });
+    const response = await fetch(`/api/agent-inputs/${encodeURIComponent(agentReview.ticket)}?review_token=${encodeURIComponent(agentReview.token)}`, { cache: "no-store" });
     if (!response.ok) throw new Error("review unavailable");
     const data = await response.json();
-    agentReview = { ...data, ticket, token };
+    agentReview = { ...agentReview, ...data };
     if (data.language !== LANG) setLang(data.language);
     lastReport = data.report; lastText = data.text;
     if (data.report.source?.kind === "url") renderUrl(data.report);
     else render(data.report, data.text);
     renderAgentContext();
   } catch (_) { showError(t("agent.loadError")); }
+}
+
+async function sha256Hex(text) {
+  try {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return "unavailable"; // insecure context: the record keeps the order without hashes
+  }
 }
 
 // Text examples are synthetic; URL examples fetch public pages live.
@@ -299,7 +330,7 @@ let reviewBusy = false;
 const currentReview = (report = lastReport, language = LANG) => reviewReports.get(report)?.[language] || null;
 
 function markdownOf(report, text, language = LANG) {
-  return reportMarkdown(report, language, currentReview(report, language));
+  return reportMarkdown(report, language, currentReview(report, language), revisionRecord());
 }
 
 function renderReview(review) {
@@ -468,7 +499,6 @@ async function scanText(text) {
   hideError();
   try {
     const data = await streamScan("/api/scan", jsonInit({ text }), STEPS.text);
-    if (editChain) data.edit_chain = editChain;
     lastReport = data; lastText = text;
     render(data, text);
     return data;
@@ -578,7 +608,7 @@ function renderConclusion(data) {
   const flags = (data.url || {}).flags || [];
   if (flags.length) parts.push(t("concl.flags", { n: flags.length }));
   const h = data.handoff;
-  if (editChain) parts.unshift(t("concl.editChain"));
+  if (agentReview ? agentReview.revision > 0 : !!editChain) parts.unshift(t("concl.editChain"));
   if (h && ["ready", "review", "withheld"].includes(h.status)) {
     const c = h.changes || {};
     if (h.status === "withheld") parts.push(t("concl.copy.withheld", { reason: t(`handoff.reason.${h.reason}`) }));
@@ -1095,7 +1125,8 @@ async function copySanitized() {
 function exportJson() {
   if (!lastReport) return;
   const payload = { ...lastReport, language: LANG, review_report: currentReview() };
-  if (editChain) payload.edit_chain = editChain;
+  const revisions = revisionRecord();
+  if (revisions) payload.revision_record = revisions;
   downloadBlob("preflight-report.json", JSON.stringify(payload, null, 2), "application/json");
 }
 
@@ -1246,40 +1277,73 @@ $("handoff-rescan").addEventListener("click", async () => {
   // count and a possible retry must all refer to the same text
   $("input").value = text;
   updateCharcount();
-  editChain = { rescanned_after_edit: true };
-  const data = await scanText(text);
-  if (!data) return;
-  // an agent-review ticket must bind to the freshly checked copy; otherwise a
-  // later approval would release the old snapshot while the page shows this one
   if (agentReview) {
-    try {
-      const result = await postJSON(`/api/agent-inputs/${encodeURIComponent(agentReview.ticket)}/revision`, {
-        review_token: agentReview.token, report: data,
-      });
-      agentReview = { ...agentReview, status: result.status, candidate_sha256: result.candidate_sha256 };
-      renderAgentContext();
-    } catch (err) {
-      showError(err.message);
-    }
+    // one server-side operation: it scans the edit and rebinds the ticket itself;
+    // the page only ever shows what the server returned
+    if (!revisionOp || revisionOp.text !== text)
+      revisionOp = { request_id: crypto.randomUUID(), text };
+    const bound = await reviseTicket(text);
+    if (bound) verdictPanel().scrollIntoView({ behavior: "smooth" });
+    return;
   }
+  // an ordinary web scan keeps its edit record in this session only
+  const index = (editChain?.revisions?.length || 0) + 1;
+  editChain = { revisions: [...(editChain?.revisions || []),
+    { index, parent: index - 1, submitted_sha256: await sha256Hex(text), created: new Date().toISOString() }] };
+  await scanText(text);
   verdictPanel().scrollIntoView({ behavior: "smooth" });
 });
-// a Fill suggestion may cite a numbered finding: clicking it closes the dialog and
-// takes the reviewer to the evidence (the annotated source, or the URL receipt)
-$("detail-dialog").addEventListener("click", (event) => {
-  const ref = event.target.closest(".step-ref");
-  if (!ref) return;
-  const finding = (currentReview()?.facts?.findings || []).find((x) => x.index === Number(ref.dataset.index));
-  if (!finding) return;
-  closeDetail();
-  if (finding.kind === "url_flag") { openDetail("evidence"); return; }
-  const panel = $("source").closest(".panel");
-  if (panel.hidden) return;
-  panel.scrollIntoView({ behavior: "smooth" });
-  panel.classList.remove("locate-flash");
-  requestAnimationFrame(() => panel.classList.add("locate-flash"));
-});
 
+// the server scans the edited text and rebinds the ticket; the client submits the
+// edit and the version it was looking at, nothing else
+async function reviseTicket(text) {
+  revisionBusy = true;
+  renderAgentContext();
+  try {
+    for (;;) {
+      try {
+        const result = await postJSON(`/api/agent-inputs/${encodeURIComponent(agentReview.ticket)}/revision`, {
+          review_token: agentReview.token,
+          base_revision: agentReview.revision,
+          request_id: revisionOp.request_id,
+          text,
+        });
+        if (result.status === "revising") {  // the server is still scanning: ask again
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          continue;
+        }
+        agentReview = { ...agentReview, status: result.ticket_status, candidate_sha256: result.candidate_sha256,
+                        revision: result.revision, revisions: result.revisions, revising: null };
+        lastReport = result.report; lastText = text;
+        render(result.report, text);
+        return true;
+      } catch (err) {
+        // the ticket stays locked on the server; the page keeps the edit and the
+        // failure, and never falls back to the old copy automatically
+        agentReview = { ...agentReview, revising: { state: "failed", error: err.message } };
+        showError(err.message);
+        return false;
+      }
+    }
+  } finally {
+    revisionBusy = false;
+    renderAgentContext();
+  }
+}
+
+// explicit give-up: the previously bound version stays and must be reviewed again
+$("agent-abandon").addEventListener("click", async () => {
+  if (!agentReview) return;
+  try {
+    await postJSON(`/api/agent-inputs/${encodeURIComponent(agentReview.ticket)}/abandon`, {
+      review_token: agentReview.token,
+    });
+    revisionOp = null;
+    await refreshAgentReview();
+  } catch (err) {
+    showError(err.message);
+  }
+});
 // a failed attempt retries in place by replaying the exact request that failed;
 // it reruns the scan, it does not resume from the last completed stage
 $("error-retry").addEventListener("click", () => {

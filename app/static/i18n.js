@@ -12,6 +12,9 @@ const I18N = {
     "agent.approve": "允许 Codex 读取",
     "agent.reject": "拒绝交接",
     "agent.decisionError": "确认未完成，请刷新查看状态。",
+    "agent.revising": "正在重新检查修改稿…",
+    "agent.reviseFailed": "重新检查失败",
+    "agent.abandon": "放弃修改，返回上一版本",
     "agent.loadError": "审阅链接已失效，请让 Codex 重新检查。",
     "handoff.reason.agent_url_blocked": "网址风险已拦截。",
 
@@ -308,6 +311,9 @@ const I18N = {
     "agent.approve": "Allow Codex to read",
     "agent.reject": "Reject handoff",
     "agent.decisionError": "Approval did not complete. Refresh to check its status.",
+    "agent.revising": "Rechecking the edited copy…",
+    "agent.reviseFailed": "Recheck failed",
+    "agent.abandon": "Discard the edit, return to the previous version",
     "agent.loadError": "Review link expired. Ask Codex to check the source again.",
     "handoff.reason.agent_url_blocked": "URL risk blocked this handoff.",
 

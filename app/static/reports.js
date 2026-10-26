@@ -18,6 +18,8 @@ const REPORT_LABELS = {
     steps: "Human-review suggestions", generatedNote: "Generated notes require human review. The scan verdict and source evidence below remain authoritative.",
     generationUsage: "Report generation usage", unknown: "Unknown", record: "Record", quote: "Source quote",
     editChain: "Rescanned after a human edit", editChainDetail: "This scan re-checked a human-edited version of the previous prepared copy.",
+    revisions: "Revision record", revision: "Revision", revParent: "Parent version",
+    revSubmitted: "Submitted text SHA-256", revCopy: "Prepared copy SHA-256", revApproved: "This version was approved for handoff",
     allow: "Allow", block: "Block", reviewAction: "Review", ready: "Ready", withheld: "Withheld", unavailable: "Report only",
     text: "Text", image: "Image", urlKind: "URL", person: "Person", email: "Email", phone: "Phone", address: "Address",
     benign: "Benign", injectionValue: "Injection", suspicious: "Suspicious", malicious: "Malicious",
@@ -39,6 +41,8 @@ const REPORT_LABELS = {
     steps: "人工复核建议", generatedNote: "生成内容需人工核对，判定和证据以以下扫描记录为准。",
     generationUsage: "报告生成用量", unknown: "未知", record: "记录", quote: "原文引用",
     editChain: "人工修改后重扫", editChainDetail: "本扫描是对上一份处理稿人工修改后的重新检查。",
+    revisions: "修订记录", revision: "修订", revParent: "父版本",
+    revSubmitted: "提交正文 SHA-256", revCopy: "处理副本 SHA-256", revApproved: "此版本已批准交接",
     allow: "通过", block: "拦截", reviewAction: "需确认", ready: "可复制", withheld: "待复核", unavailable: "仅提供报告",
     text: "文本", image: "图片", urlKind: "网址", person: "姓名", email: "邮箱", phone: "电话", address: "地址",
     benign: "无害", injectionValue: "提示注入", suspicious: "可疑", malicious: "恶意",
@@ -47,7 +51,7 @@ const REPORT_LABELS = {
   },
 };
 
-function reportMarkdown(report, language = "en", reviewReport = null) {
+function reportMarkdown(report, language = "en", reviewReport = null, revisions = null) {
   const L = REPORT_LABELS[language] || REPORT_LABELS.en;
   const translate = value => ({ review: L.reviewAction, injection: L.injectionValue, url: L.urlKind }[value] || L[value] || localizedValue(value, language) || L.unknown);
   const message = key => I18N[language]?.[key] || I18N.en[key] || key;
@@ -65,6 +69,13 @@ function reportMarkdown(report, language = "en", reviewReport = null) {
   if (report.risk?.malicious_probability != null) item(L.risk, percentage(report.risk.malicious_probability));
   item(L.usage, usage(report.usage, report.usage?.calls, report.total_ms));
   if (report.edit_chain?.rescanned_after_edit) item(L.editChain, L.editChainDetail);
+  for (const r of revisions || []) {
+    item(`${L.revision} #${r.index}`, r.created || "");
+    item(L.revParent, String(r.parent ?? ""));
+    if (r.submitted_sha256) item(L.revSubmitted, `${r.submitted_sha256.slice(0, 16)}…`);
+    if (r.candidate_sha256) item(L.revCopy, `${r.candidate_sha256.slice(0, 16)}…`);
+    if (r.approved) item(`${L.revision} #${r.index}`, L.revApproved);
+  }
   if (reviewReport?.language === language) {
     section(L.review); lines.push(literal(reviewReport.generated.title), "", L.generatedNote);
     lines.push("", `### ${L.summary}`, "", literal(reviewReport.generated.summary));
