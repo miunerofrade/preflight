@@ -1,6 +1,6 @@
 # secrets & internal docs (never commit)
 .env
-competitive-intel.md
+/competitive-intel.md
 
 # python
 .venv/
