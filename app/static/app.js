@@ -1210,6 +1210,10 @@ $("handoff-rescan").addEventListener("click", async () => {
   const text = $("handoff-edit-text").value.trim();
   if (!text) { showError(t("err.empty")); return; }
   if (text.length > 20000) { showError(t("err.tooLong")); return; }
+  // the edited copy becomes the content under check: the input box, the char
+  // count and a possible retry must all refer to the same text
+  $("input").value = text;
+  updateCharcount();
   lastAttempt = "text";
   setBusy(true);
   hideError();
