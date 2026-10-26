@@ -16,6 +16,59 @@ let lastText = null;
 let batchItems = [];
 // what is on screen, so a language switch can re-render it
 let lastView = null;
+let agentReview = null;
+let agentDecisionBusy = false;
+
+function renderAgentContext() {
+  if (!agentReview) return;
+  $("agent-context").hidden = false;
+  $("agent-source").textContent = agentReview.source;
+  $("agent-state").textContent = t(`agent.${agentReview.status}`);
+  $("agent-state").className = agentReview.status === "pending" ? "chip-warn" : "";
+  $("agent-url-evidence").hidden = !lastReport?.url_report;
+  const pending = agentReview.status === "pending";
+  $("copy").textContent = t("agent.approve");
+  $("copy").hidden = !pending;
+  $("copy").disabled = agentDecisionBusy || !$("confirm-copy").checked;
+  $("agent-reject").hidden = !pending;
+  $("agent-reject").disabled = agentDecisionBusy;
+  $("handoff-confirm").hidden = !pending;
+  if (!pending) $("handoff-status").hidden = true;
+}
+
+async function decideAgentInput(approve) {
+  if (!agentReview || agentReview.status !== "pending" || agentDecisionBusy ||
+      (approve && !$("confirm-copy").checked)) return;
+  agentDecisionBusy = true;
+  renderAgentContext();
+  try {
+    const result = await postJSON(`/api/agent-inputs/${encodeURIComponent(agentReview.ticket)}/decision`, {
+      review_token: agentReview.token, candidate_sha256: agentReview.candidate_sha256, approve,
+    });
+    agentReview.status = result.status;
+    hideError();
+  } catch (_) { showError(t("agent.decisionError")); }
+  finally { agentDecisionBusy = false; renderAgentContext(); }
+}
+
+async function loadAgentReview() {
+  if (typeof location === "undefined") return;
+  const params = new URL(location.href).searchParams;
+  const ticket = params.get("agent_input"), token = params.get("review_token");
+  if (!ticket || !token) return;
+  $("input-panel").hidden = true;
+  try {
+    const response = await fetch(`/api/agent-inputs/${encodeURIComponent(ticket)}?review_token=${encodeURIComponent(token)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("review unavailable");
+    const data = await response.json();
+    agentReview = { ...data, ticket, token };
+    if (data.language !== LANG) setLang(data.language);
+    lastReport = data.report; lastText = data.text;
+    if (data.report.source?.kind === "url") renderUrl(data.report);
+    else render(data.report, data.text);
+    renderAgentContext();
+  } catch (_) { showError(t("agent.loadError")); }
+}
 
 // Text examples are synthetic; URL examples fetch public pages live.
 const EXAMPLES = [
@@ -790,7 +843,10 @@ function closeDetail() {
 
 function openDetail(kind) {
   let content, title;
-  if (kind === "evidence" && lastReport?.source?.kind === "url") {
+  if (kind === "agent-url" && lastReport?.url_report) {
+    title = t("evidence.h");
+    content = renderUrlEvidence(lastReport.url_report.url || {}, true);
+  } else if (kind === "evidence" && lastReport?.source?.kind === "url") {
     title = t("evidence.h");
     content = renderUrlEvidence(lastReport.url || {}, true);
   } else if (kind === "edits" && lastReport?.handoff?.edits?.length) {
@@ -919,6 +975,7 @@ function showError(msg) {
 function hideError() { $("error").hidden = true; }
 
 async function copySanitized() {
+  if (agentReview) { await decideAgentInput(true); return; }
   const h = lastReport?.handoff;
   if (!h || typeof h.text !== "string" || !["ready", "review"].includes(h.status) ||
       (h.status === "review" && !$("confirm-copy").checked) || $("run").disabled) return;
@@ -1038,6 +1095,7 @@ document.addEventListener("langchange", () => {
   const keep = [lastReport, lastText];
   rerenderView();
   if (lastView && lastView.kind !== "batch") [lastReport, lastText] = keep;
+  renderAgentContext();
 });
 
 document.addEventListener("click", event => {
@@ -1059,9 +1117,11 @@ $("lang-toggle").addEventListener("click", () => setLang(LANG === "zh" ? "en" : 
 
 $("run").addEventListener("click", runCurrent);
 $("copy").addEventListener("click", copySanitized);
+$("agent-reject").addEventListener("click", () => decideAgentInput(false));
 $("confirm-copy").addEventListener("change", () => {
   const h = lastReport?.handoff;
   $("copy").disabled = !(h?.status === "review" && typeof h.text === "string" && $("confirm-copy").checked);
+  if (agentReview) renderAgentContext();
 });
 $("export-json").addEventListener("click", exportJson);
 $("export-md").addEventListener("click", exportMarkdown);
@@ -1087,3 +1147,5 @@ $("input").addEventListener("input", updateCharcount);
 $("input").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") runCurrent();
 });
+
+loadAgentReview();

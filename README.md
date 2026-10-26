@@ -1,6 +1,6 @@
 # Preflight
 
-**Security check for anything you are about to feed an AI agent.**
+**Check unfamiliar content before Codex reads it.**
 
 Agents now read email, web pages, documents and code written by strangers. Preflight is the
 30-second check you run *before* that content reaches your agent: paste it (or drop a PDF /
@@ -11,6 +11,23 @@ before the copy is offered; removing an instruction always requires human review
 Built for the **Clocked Build Challenge** (Oct 21 – Nov 10, 2026).
 
 Interface changes follow the repository [UI spec](docs/UI_SPEC.md) and [contributor instructions](AGENTS.md).
+
+## Codex input handoff
+
+The primary workflow is a Codex task that needs to read an unfamiliar file or website.
+The local MCP tool `preflight_open` accepts its path or URL and screens it before body
+text is returned to Codex. Ready copies can be read immediately; review-required copies
+return a local review link. A person examines the existing report and edit comparison,
+then approves the exact copy hash or rejects it. `preflight_read` retrieves the approved
+snapshot. It cannot approve a ticket and blocked results never include source text.
+
+The server starts its own loopback review page, so no separately launched web service is
+needed. Tickets remain in memory for at most 30 minutes and disappear on disconnect.
+Codex receives only the status and usable content or a review link; detailed reports
+remain on the review page. The existing web interface and exports remain available. This workflow is cooperative;
+it does not intercept arbitrary Codex shell/browser reads. See
+[Codex integration](docs/CODEX_INTEGRATION.md) for project configuration, source limits,
+data flow and the release contract. No demonstration site or video is included.
 
 ## The problem
 

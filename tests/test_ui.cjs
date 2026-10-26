@@ -177,6 +177,27 @@ test("Fill report is cached per scan and language, escaped and never changes dis
   assert.equal(app.run("currentReview()"), null);
 });
 
+test("Codex approval uses the review endpoint and exact hash, without copying to clipboard", async () => {
+  const app = ui("zh");
+  let decisions = 0;
+  app.context.fetch = async (url, request) => {
+    decisions++;
+    assert.match(url, /api\/agent-inputs\/ticket\/decision/);
+    assert.equal(JSON.parse(request.body).candidate_sha256, "hash-of-reviewed-copy");
+    return { ok: true, json: async () => ({ status: "released" }) };
+  };
+  app.run('agentReview = {ticket:"ticket", token:"human-token", source:"note.txt", status:"pending", candidate_sha256:"hash-of-reviewed-copy"}; renderAgentContext()');
+  assert.equal(app.get("copy").disabled, true);
+  await app.run("copySanitized()");
+  assert.equal(decisions, 0);
+  app.get("confirm-copy").checked = true;
+  await app.run("copySanitized()");
+  assert.equal(decisions, 1);
+  assert.equal(app.copied.length, 0);
+  assert.equal(app.run("agentReview.status"), "released");
+  assert.equal(app.get("copy").hidden, true);
+});
+
 test("new evidence and edit markup escapes content and refuses non-web source links", () => {
   const app = ui();
   assert.equal(app.run('sourceLink("javascript:alert(1)", "Source")'), "Source");

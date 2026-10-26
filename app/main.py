@@ -17,14 +17,15 @@ from clocked_sdk import (
     RequestTimeoutError,
     ValidationError,
 )
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .scanner import compare_batch, scan, scan_url
 from .webcheck import summarize_url
 from .reports import ReportGenerationError, generate_review
+from .agent_inputs import agent_inputs
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_CHARS = 20_000
@@ -54,6 +55,45 @@ class ScanBatchRequest(BaseModel):
 
 class ScanUrlRequest(BaseModel):
     url: str
+
+
+class AgentDecisionRequest(BaseModel):
+    review_token: str
+    candidate_sha256: str
+    approve: bool
+
+
+def _agent_review_request(request: Request) -> None:
+    if request.url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise HTTPException(status_code=403, detail="Agent reviews are local only.")
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        raise HTTPException(status_code=403, detail="Cross-origin review is not allowed.")
+
+
+@app.get("/api/agent-inputs/{ticket}")
+def get_agent_input(ticket: str, review_token: str, request: Request) -> JSONResponse:
+    _agent_review_request(request)
+    try:
+        data = agent_inputs.review(ticket, review_token)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Invalid review token.")
+    return JSONResponse(data, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+
+@app.post("/api/agent-inputs/{ticket}/decision")
+def decide_agent_input(ticket: str, req: AgentDecisionRequest, request: Request) -> dict:
+    _agent_review_request(request)
+    try:
+        return agent_inputs.decide(ticket, req.review_token, req.candidate_sha256, req.approve)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Input ticket expired. Scan again.")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Invalid review token.")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 class ReviewReportRequest(BaseModel):
@@ -132,7 +172,7 @@ def _stream(work: Callable[[Callable[[str], None]], dict[str, Any]]) -> Streamin
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(BASE_DIR / "static" / "index.html")
+    return FileResponse(BASE_DIR / "static" / "index.html", headers={"Referrer-Policy": "no-referrer"})
 
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
