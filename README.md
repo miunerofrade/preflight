@@ -22,6 +22,12 @@ text is returned to Codex. Ready copies can be read immediately; review-required
 return a local review link. A person examines the existing report and edit comparison,
 then approves the exact copy hash or rejects it. `preflight_read` retrieves the approved
 snapshot. It cannot approve a ticket and blocked results never include source text.
+Editing the copy on the review page runs one server-side operation: the server scans the
+submitted text itself, binds the fresh report and candidate to the ticket under a version
+number and an operation id, and only that bound version can be approved. While a revision
+is unresolved the old copy is frozen; a failed revision keeps the edit for a safe retry
+and can only be left through an explicit "return to the previous version" action. Each
+ticket keeps a revision record (parent version, submitted-text hash, copy hash, approval).
 
 The server starts its own loopback review page, so no separately launched web service is
 needed. Tickets remain in memory for at most 30 minutes and disappear on disconnect.
@@ -103,11 +109,12 @@ the same screening and a full record.
   text; rechecking runs a full new scan over the edited text, and the previous
   confirmation expires with the new result. A wholesale script replacement says so
   explicitly: the copy keeps only the replacement marker. The report, its exports and the
-  conclusion say that this scan followed a human edit; on an agent-review page the ticket
-  is rebound to the new copy, so the approved hash always matches what is on screen.
+  conclusion say that this scan followed a human edit, and the revision record ties each
+  version to its parent, the submitted text hash and the final handed-off copy.
 - **Retry a failed scan in place** — errors offer a retry that replays the exact failed
   request, not whatever the input box contains by then. The retry reruns the scan; it
-  does not resume from the last completed stage.
+  does not resume from the last completed stage. A ticket revision retries under the same
+  operation id, so a lost response never triggers a second paid scan.
 - **One-click examples** — three primary examples (ordinary notes, a project update with
   a hidden instruction, a private support ticket), plus malicious and benign scripts,
   batch triage and a live official-site URL control. Text examples are synthetic and
@@ -217,11 +224,12 @@ It does not rerun detection or change the original disposition, evidence or copy
 The draft opens in the shared detail dialog and is cached per scan and language. Reopening
 it makes no additional call. Generation usage is reported separately from scan usage;
 generation failure leaves both exports available. Only curated scan facts are sent to Fill,
-not the full original text or prepared copy. The scan facts include numbered findings;
-generated steps cite them as [2]-style references, each citation carries the finding as a
-tooltip and clicking it takes the reviewer to the evidence, and a citation that points at
-no listed finding falls back to the fixed template instead of shipping an unverifiable
-reference. If no review suggestion is returned, a fixed manual-comparison reminder is used
+not the full original text or prepared copy. The scan facts include numbered findings
+bound to the current report version; generated steps cite them as [2]-style references,
+each citation carries the finding as a tooltip and clicking it locates the exact evidence
+- the specific URL flag, the highlighted span in the annotated source, or the right
+panel - and a citation with an invalid index ([0] or past the end) falls back to the
+fixed template instead of shipping an unverifiable reference. If no review suggestion is returned, a fixed manual-comparison reminder is used
 and identified as a template in the generated record.
 
 The page initially uses English and remembers language changes. Markdown headings and
