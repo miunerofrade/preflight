@@ -1,6 +1,7 @@
 # secrets & internal docs (never commit)
 .env
 /competitive-intel.md
+/HANDOFF.md
 /.codex/config.toml
 
 # python
