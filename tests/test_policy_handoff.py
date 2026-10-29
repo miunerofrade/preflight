@@ -273,3 +273,28 @@ def test_partial_recheck_usage_is_counted_when_next_call_times_out():
     assert value["handoff"]["reason"] == "recheck_failed"
     assert value["usage"]["calls"] == 5  # 4 original + successful recheck Guard
     assert value["usage"]["input_tokens"] == 9
+
+
+def test_copy_recheck_routing_names_the_script_marker_only_when_present():
+    criteria = []
+
+    class Client:
+        def injection(self, **_):
+            return {"verdict": "benign", "severity": "none", "injection": 0.01, "evidence": []}
+
+        def pii(self, **_):
+            return {"entities": [], "counts": {}}
+
+        def decide(self, **kw):
+            if "contains_executable_code" in kw["questions"]:
+                criteria.append(kw["questions"]["contains_executable_code"]["criteria"]["no_code"])
+                return {"answers": {"contains_executable_code": {"choice": "no_code", "confidence": 0.99,
+                                                                 "probabilities": {"no_code": 0.99}}}}
+            return {"answers": {"action": {"choice": "allow", "confidence": 0.99,
+                                             "probabilities": {"allow": 0.99}}}}
+
+    scan("Notes [Script removed] more", _client=Client(), _prepare_copy=False, _copy_recheck=True)
+    scan("Notes more", _client=Client(), _prepare_copy=False, _copy_recheck=True)
+    scan("Notes [Script removed] more", _client=Client(), _prepare_copy=False)
+    assert "editing marker, not code" in criteria[0]
+    assert all("editing marker" not in text for text in criteria[1:])

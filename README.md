@@ -72,7 +72,7 @@ Everything in this README serves one pass through the gate:
    rejected tickets never ship text. The integration is a cooperative convention — it does
    not intercept other Codex read paths.
 6. **Keep the record** — the scan, the edits, the recheck and the receipts land in JSON and
-   Markdown exports; seven real-response cases replay offline for regression.
+   Markdown exports; twelve real-response cases replay offline for regression.
 
 What the pass produces — a checked, hash-pinned copy with its retrieval receipt, for the
 formats the integration supports — is what Codex actually consumes; everything else gets
@@ -291,12 +291,16 @@ stream, masking
 parameters, verdict-summary forwarding, usage aggregation, the API error mapping,
 deterministic URL checks, and SSRF refusal.
 
-Seven versioned synthetic text cases have real Clocked requests/responses and billing
-metadata in `tests/fixtures/recordings/`. All seven original dispositions matched the
-predeclared expectations. Six of seven full outcomes matched: the private-ticket copy
-remained review instead of ready, despite no remaining PII. We preserve that conservative
-result, rather than changing the expectation to claim a perfect score. This tiny corpus
-is a regression/demo set, not an estimate of real-world detection accuracy. See
+Twelve versioned synthetic text cases have real Clocked requests/responses and billing
+metadata in `tests/fixtures/recordings/` (72 calls and 145 credits in total). All twelve
+original dispositions matched the predeclared expectations. Ten of twelve full outcomes
+matched: the private-ticket copy remained review instead of ready, despite no remaining PII,
+and the Chinese download-lure copy was withheld because the routing check was uncertain
+(0.13 confidence). We preserve those conservative results, rather than changing the
+expectations to claim a perfect score. The set now includes ordinary and hostile Chinese
+text, a long page with one buried instruction, and a mixed setup guide where only the one
+risky fenced block is cut. This small corpus is a regression/demo set, not an estimate of
+real-world detection accuracy. See
 [`tests/fixtures/recordings/README.md`](tests/fixtures/recordings/README.md) for results,
 the initial false positive and recording instructions.
 

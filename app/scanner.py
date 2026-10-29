@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from clocked_sdk import Clocked
 
-from .handoff import build_handoff
+from .handoff import SCRIPT_REPLACEMENT, build_handoff
 from .policy import detector_complete, enforce_policy
 from .provenance import claim_sources, public_sources
 from .pdfcheck import inspect_pdf
@@ -253,7 +253,14 @@ def scan(
 
     step("routing")
     # 3 - Routing (Decide): is there executable code worth inspecting?
-    route = tracked(client.decide(**decide_kwargs(questions=CODE_QUESTION)))
+    code_question = CODE_QUESTION
+    if _copy_recheck and text is not None and SCRIPT_REPLACEMENT in text:
+        # a cut block leaves a placeholder that must not read as code; other requests stay unchanged
+        base = CODE_QUESTION["contains_executable_code"]
+        code_question = {"contains_executable_code": {**base, "criteria": {
+            **base["criteria"],
+            "no_code": base["criteria"]["no_code"] + f" The literal text {SCRIPT_REPLACEMENT} is an editing marker, not code."}}}
+    route = tracked(client.decide(**decide_kwargs(questions=code_question)))
     route_answer = route["answers"]["contains_executable_code"]
     has_code = route_answer["choice"] == "code"
     report["routing"] = {
