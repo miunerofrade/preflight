@@ -1,6 +1,7 @@
 """Prepare a text copy from validated source offsets; never treat masking as screening."""
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from clocked_sdk import ClockedError
@@ -8,6 +9,55 @@ from clocked_sdk import ClockedError
 from .policy import sensitive_pii
 
 SCRIPT_REPLACEMENT = "[Script removed]"
+RISKY_SCRIPT = {"malicious", "suspicious"}
+# overlapping edits keep the strongest kind: a cut script block swallows anything inside it
+_EDIT_RANK = {"mask": 0, "remove": 1, "remove_script_block": 2}
+_EDIT_MARKER = {"mask": "[REDACTED]", "remove": "[Instruction removed]", "remove_script_block": SCRIPT_REPLACEMENT}
+_FENCE = re.compile(r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[ \t]*$", re.M | re.S)
+_SCRIPT_TAG = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.I | re.S)
+
+
+def code_blocks(text: str) -> list[tuple[int, int]]:
+    """Closed Markdown fences and HTML script elements; unclosed fences are not blocks."""
+    spans = sorted({m.span() for m in _FENCE.finditer(text)} | {m.span() for m in _SCRIPT_TAG.finditer(text)})
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def risky_script_blocks(text: str, script: dict) -> list[tuple[int, int]] | None:
+    """Blocks to cut when every script finding sits inside a delimited code block.
+
+    None means the input must be replaced in full: no evidence, an offset that does
+    not match the source, or a finding outside any block (code mixed into prose).
+    """
+    evidence = script.get("evidence") or []
+    blocks = code_blocks(text)
+    if not evidence or not blocks:
+        return None
+    hit: set[tuple[int, int]] = set()
+    for item in evidence:
+        quote = item.get("line", item.get("quote"))
+        start, end = item.get("start"), item.get("end")
+        if (type(start) is not int or type(end) is not int or not 0 <= start < end <= len(text)
+                or not isinstance(quote, str) or text[start:end] != quote):
+            return None
+        block = next((b for b in blocks if b[0] <= start and end <= b[1]), None)
+        if block is None:
+            return None
+        hit.add(block)
+    return sorted(hit)
+
+
+def _replace_whole(text: str, edits_out: list | None) -> tuple[str, dict[str, int]]:
+    if edits_out is not None:
+        edits_out.append({"kind": "remove_script", "start": 0, "end": len(text), "before": text,
+                          "after": SCRIPT_REPLACEMENT, "copy_start": 0, "copy_end": len(SCRIPT_REPLACEMENT)})
+    return SCRIPT_REPLACEMENT, {"removed": 0, "masked": 0, "scripts_removed": 1}
 
 
 def _span(text: str, item: dict, value_key: str) -> tuple[int, int]:
@@ -23,17 +73,17 @@ def prepare_text(text: str, layers: dict, *, edits_out: list | None = None) -> t
 
     Overlapping spans are merged; a removal wins over masking. Any invalid source
     offset withholds the entire copy, rather than making a best-effort edit.
-    Risky script inputs are replaced in full by a fixed marker, so no evidence
-    offsets or original source content are used for that replacement.
+    A risky script whose findings all sit in delimited code blocks loses only those
+    blocks; otherwise the input is replaced in full by a fixed marker, with no
+    evidence offsets or original source content used for that replacement.
     """
     script = layers.get("script") or {}
-    if script.get("verdict") in {"malicious", "suspicious"}:
-        replacement = SCRIPT_REPLACEMENT
-        if edits_out is not None:
-            edits_out.append({"kind": "remove_script", "start": 0, "end": len(text), "before": text,
-                              "after": replacement, "copy_start": 0, "copy_end": len(replacement)})
-        return replacement, {"removed": 0, "masked": 0, "scripts_removed": 1}
     edits: list[tuple[int, int, str]] = []
+    if script.get("verdict") in RISKY_SCRIPT:
+        blocks = risky_script_blocks(text, script)
+        if blocks is None:
+            return _replace_whole(text, edits_out)
+        edits.extend((start, end, "remove_script_block") for start, end in blocks)
     injection = layers["injection"]
     evidence = injection.get("evidence") or []
     flagged = injection.get("verdict") != "benign"
@@ -63,7 +113,7 @@ def prepare_text(text: str, layers: dict, *, edits_out: list | None = None) -> t
     for start, end, kind in sorted(edits):
         if merged and start < merged[-1][1]:
             a, b, previous = merged[-1]
-            merged[-1] = (a, max(end, b), "remove" if "remove" in (kind, previous) else "mask")
+            merged[-1] = (a, max(end, b), max(kind, previous, key=_EDIT_RANK.__getitem__))
         else:
             merged.append((start, end, kind))
     chunks: list[str] = []
@@ -71,7 +121,7 @@ def prepare_text(text: str, layers: dict, *, edits_out: list | None = None) -> t
     copy_cursor = 0
     for start, end, kind in merged:
         unchanged = text[cursor:start]
-        replacement = "[Instruction removed]" if kind == "remove" else "[REDACTED]"
+        replacement = _EDIT_MARKER[kind]
         copy_cursor += len(unchanged)
         if edits_out is not None:
             edits_out.append({"kind": kind, "start": start, "end": end, "before": text[start:end],
@@ -80,10 +130,14 @@ def prepare_text(text: str, layers: dict, *, edits_out: list | None = None) -> t
         copy_cursor += len(replacement)
         cursor = end
     chunks.append(text[cursor:])
-    return "".join(chunks), {
+    changes = {
         "removed": sum(kind == "remove" for _, _, kind in merged),
         "masked": sum(kind == "mask" for _, _, kind in merged),
     }
+    blocks_removed = sum(kind == "remove_script_block" for _, _, kind in merged)
+    if blocks_removed:
+        changes["script_blocks_removed"] = blocks_removed
+    return "".join(chunks), changes
 
 
 def build_handoff(text: str | None, report: dict, recheck: Callable[[str], dict]) -> dict[str, Any]:
@@ -93,24 +147,35 @@ def build_handoff(text: str | None, report: dict, recheck: Callable[[str], dict]
         return {**result, "status": "unavailable", "reason": "file_source"}
     layers = report["layers"]
     script = layers.get("script")
-    if script and script.get("verdict") in {"malicious", "suspicious"}:
-        candidate, changes = prepare_text(text, layers, edits_out=result["edits"])
+    incomplete = any(r["code"] in {"routing_uncertain", "guard_incomplete", "checks_incomplete"}
+                     for r in report["policy"]["reasons"])
+
+    def whole_replacement() -> dict[str, Any]:
         # No source characters survive: this is a fixed non-executable marker,
         # not an attempted repair of arbitrary source code or a model clearance.
-        assert candidate == SCRIPT_REPLACEMENT
-        return {**result, "status": "review", "text": candidate, "changes": changes,
+        edits: list = []
+        candidate, changes = _replace_whole(text, edits)
+        return {**result, "status": "review", "text": candidate, "changes": changes, "edits": edits,
                 "reason": "script_removed", "validation": {"method": "fixed_script_replacement",
                                                             "retains_source_content": False}}
-    if script and script.get("verdict") not in {"benign", "malicious", "suspicious"}:
+
+    risky = bool(script) and script.get("verdict") in RISKY_SCRIPT
+    if risky and (incomplete or risky_script_blocks(text, script) is None):
+        return whole_replacement()
+    if script and script.get("verdict") not in {"benign", *RISKY_SCRIPT}:
         return {**result, "reason": "script_risk"}
     if (report.get("routing") or {}).get("contains_code") and script is None:
         return {**result, "reason": "code_unchecked"}
-    if any(r["code"] in {"routing_uncertain", "guard_incomplete", "checks_incomplete"} for r in report["policy"]["reasons"]):
+    if incomplete:
         return {**result, "reason": "checks_incomplete"}
     try:
         candidate, changes = prepare_text(text, layers, edits_out=result["edits"])
     except ValueError:
-        return {**result, "reason": "evidence_invalid"}
+        # surrounding evidence can't be applied, so keeping any of the text is unsafe
+        return whole_replacement() if risky else {**result, "reason": "evidence_invalid"}
+    if risky:
+        # the remaining prose and code still go through the full recheck below
+        result["validation"] = {"method": "script_blocks_removed", "retains_source_content": True}
     result["changes"] = changes
     if candidate == text:
         if report["action"]["choice"] == "block":
@@ -126,6 +191,6 @@ def build_handoff(text: str | None, report: dict, recheck: Callable[[str], dict]
     unresolved = any(r["code"] != "model_uncertain" for r in verification["policy"]["reasons"])
     if verification["action"]["choice"] == "block" or unresolved:
         return {**result, "reason": "residual_risk", "draft_text": candidate}
-    review = changes["removed"] > 0 or verification["action"]["choice"] != "allow" or report["action"]["choice"] == "block"
+    review = changes["removed"] > 0 or changes.get("script_blocks_removed") or verification["action"]["choice"] != "allow" or report["action"]["choice"] == "block"
     return {**result, "status": "review" if review else "ready", "text": candidate,
             "reason": "edited_checked"}

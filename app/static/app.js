@@ -646,7 +646,7 @@ function renderConclusion(data) {
   if (h && ["ready", "review", "withheld"].includes(h.status)) {
     const c = h.changes || {};
     if (h.status === "withheld") parts.push(t("concl.copy.withheld", { reason: t(`handoff.reason.${h.reason}`) }));
-    else if (c.removed || c.masked || c.scripts_removed)
+    else if (c.removed || c.masked || c.scripts_removed || c.script_blocks_removed)
       parts.push(t(h.status === "ready" ? "concl.copy.ready" : "concl.copy.review"));
   }
   const actions = [];
@@ -771,6 +771,7 @@ function renderHandoff(data) {
   const notes = [];
   if (changes.removed) notes.push(t("handoff.removedCount", { n: changes.removed }));
   if (changes.masked) notes.push(t("handoff.maskedCount", { n: changes.masked }));
+  if (changes.script_blocks_removed) notes.push(t("handoff.scriptBlocksCount", { n: changes.script_blocks_removed }));
   if (changes.scripts_removed) {
     // a wholesale replacement throws away the task's script content; say so plainly
     $("handoff-script-warn").textContent = t("handoff.scriptWarn");
@@ -788,7 +789,7 @@ function renderHandoff(data) {
   $("handoff-edit-toggle").hidden = !(canCopy || hasDraft);
   $("handoff-edit-toggle").textContent = t(canCopy ? "handoff.editOpen" : "handoff.editDraftOpen");
   $("copy").disabled = !canCopy || h.status !== "ready";
-  $("handoff-diff").hidden = !h.edits?.length && !(changes.removed || changes.masked || changes.scripts_removed);
+  $("handoff-diff").hidden = !h.edits?.length && !(changes.removed || changes.masked || changes.scripts_removed || changes.script_blocks_removed);
   $("handoff-diff-label").disabled = !h.edits?.length;
   if (h.edits?.length) {
     $("handoff-diff-label").textContent = t("diff.show", { n: h.edits.length });
@@ -801,7 +802,7 @@ function renderHandoff(data) {
     const sourceKind = data.source?.kind;
     const message = sourceKind === "url" ? "diff.urlOnly"
       : ["pdf", "image"].includes(sourceKind) ? "diff.fileOnly"
-      : (changes.removed || changes.masked) ? "diff.olderReport"
+      : (changes.removed || changes.masked || changes.script_blocks_removed) ? "diff.olderReport"
       : canCopy ? "diff.unchanged" : "diff.noCopy";
     $("handoff-diff-note").textContent = t(message);
     $("handoff-diff-note").hidden = false;

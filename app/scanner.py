@@ -233,9 +233,12 @@ def scan(
     # 2 - Protect: PII entities + sanitized copy
     pii_options: dict[str, Any] = {"anonymize": "mask", "mask_keep": 2}
     if _copy_recheck:
+        # the script marker is named only when present, so earlier recheck requests stay unchanged
+        markers = ("[REDACTED], [Instruction removed] and [Script removed]"
+                   if text is not None and "[Script removed]" in text else "[REDACTED] and [Instruction removed]")
         pii_options["instructions"] = (
-            "Detect any remaining actual personal data. The literal strings [REDACTED] and "
-            "[Instruction removed] are editing markers, not people, addresses or other personal data. "
+            f"Detect any remaining actual personal data. The literal strings {markers} "
+            "are editing markers, not people, addresses or other personal data. "
             "Do not label those markers as personal data; still detect real data around them."
         )
     pii = tracked(client.pii(**target_kwargs(**pii_options)))

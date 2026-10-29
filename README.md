@@ -63,9 +63,9 @@ Everything in this README serves one pass through the gate:
    redirected, when it was fetched and the SHA-256 of the response.
 4. **Prepare** — validated injection evidence is removed and personal data is masked into a
    prepared copy that is offered only after a full recheck. Two shortcuts stay honest:
-   unchanged clean text reuses its existing scan, and a risky script input is replaced in
-   full with a fixed marker that is validated locally. Removing instructions always
-   requires a human.
+   unchanged clean text reuses its existing scan, and a risky script that is not confined
+   to fenced code blocks is replaced in full with a fixed marker that is validated locally.
+   Removing instructions or code blocks always requires a human.
 5. **Hand off** — a copy that passes screening can be read immediately; a copy that needs
    review waits for a person, who compares original and copy in one dialog and approves the
    exact copy hash before `preflight_read` releases that approved snapshot. Blocked or
@@ -96,9 +96,11 @@ the same screening and a full record.
   content reworded (one campaign sent several times) and flags items that contradict each other.
 - **Prepared copy** — remove validated injection evidence and fully mask personal-data
   spans, then run the edited text through the complete scan again. Unchanged clean text
-  reuses its scan. Risky script inputs are replaced in full with a fixed marker without
-  extra model calls. Residual risks, invalid offsets and recheck failures withhold other
-  edited copies; instruction/script removal or a review verdict requires confirmation.
+  reuses its scan. When every risky-script finding sits inside a fenced Markdown block or
+  an HTML `<script>` element, only those blocks are cut and the rest is rechecked;
+  otherwise the input is replaced in full with a fixed marker without extra model calls.
+  Residual risks, invalid offsets and recheck failures withhold other edited copies;
+  instruction/script removal or a review verdict requires confirmation.
 - **Review each edit** — open the prepared copy's comparison dialog to compare the exact
   original span with its replacement and see why it changed. The edit log preserves
   Unicode source/copy positions and is included in JSON and Markdown exports.
@@ -153,10 +155,13 @@ For text, `app/handoff.py` validates every edit against the original Unicode cod
 offsets, merges overlapping spans and constructs the copy in one pass. Injection
 instructions are removed; detected personal-data values are replaced in full with
 `[REDACTED]`. Names alone do not trigger masking or another scan; when contact/identity
-data is present, names are masked too. An input classified as a risky script is replaced
-in full with the fixed `[Script removed]` marker, with the entire change shown in the
-edit comparison. No original code is retained or repaired, and copying requires confirmation.
-This fixed replacement is validated locally without extra model calls. Other edited text
+data is present, names are masked too. For a risky script, if every Inspect evidence line
+matches the source and lies inside a closed Markdown fence or HTML `<script>` element,
+only those blocks become `[Script removed]`; the remaining text (including benign blocks)
+goes through the full recheck and copying requires confirmation. Otherwise, including
+code mixed into prose, missing evidence or incomplete checks, the whole input is replaced
+with the fixed marker, validated locally without extra model calls. Flagged code is never
+repaired. Other edited text
 is scanned again with Guard, Protect, routing, conditional Inspect and Decide. A copy
 with remaining risks or personal data is withheld from handoff copying; its edited draft
 remains visible for inspection and manual revision. A copy whose injection was removed

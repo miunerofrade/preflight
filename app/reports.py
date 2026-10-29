@@ -73,6 +73,7 @@ def generate_review(report: dict, language: str, *, _client: Any = None) -> dict
         "index in square brackets like [2]. Never invent an index or cite one that is not listed. "
         "fixed_script_replacement means the entire input was replaced by a fixed marker; "
         "describe that as a full replacement, not a model-approved or repaired script. "
+        "script_blocks_removed means only the flagged code blocks were cut and the rest was rechecked. "
         "Report observed findings directly. Do not add blanket disclaimers about untrusted input, "
         "unknown other risks, inability to guarantee safety or generic calls for caution. "
         "Do not reproduce malicious instructions or personal-data values. No Markdown tables or middle-dot separators."
