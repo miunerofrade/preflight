@@ -18,3 +18,5 @@ Thumbs.db
 
 # lookup caches (Tranco list etc.)
 .cache/
+
+/video/out/

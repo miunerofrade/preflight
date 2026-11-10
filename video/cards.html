@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg: #f7f7f8; --ink: #18181b; --ink-2: #52525b; --ink-3: #696973; --accent: #4f46e5;
+          --bad: #b42318; --ok: #067647; --warn: #b54708; --surface: #fff; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1280px; height: 720px; overflow: hidden; background: var(--bg); color: var(--ink);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .scene { position: absolute; inset: 0; display: none; padding: 72px 96px; }
+  .scene.on { display: flex; flex-direction: column; justify-content: center; }
+  .kicker { font-size: 16px; font-weight: 600; color: var(--accent); letter-spacing: .08em; text-transform: uppercase; }
+  h1 { font-size: 64px; line-height: 72px; font-weight: 700; letter-spacing: -.02em; margin-top: 16px; }
+  h2 { font-size: 40px; line-height: 48px; font-weight: 700; letter-spacing: -.01em; margin-top: 12px; }
+  p.lead { font-size: 24px; line-height: 34px; color: var(--ink-2); margin-top: 20px; max-width: 980px; }
+  .fade { opacity: 0; transform: translateY(10px); transition: opacity .6s ease, transform .6s ease; }
+  .fade.in { opacity: 1; transform: none; }
+  .flow { display: grid; grid-template-columns: 1fr 64px 1fr 64px 1fr; align-items: stretch; margin-top: 48px; gap: 0; }
+  .node { background: var(--surface); border-radius: 12px; padding: 24px;
+    box-shadow: 0 2px 4px rgba(24,24,27,.06), 0 6px 16px rgba(24,24,27,.08); }
+  .node b { display: block; font-size: 20px; line-height: 28px; }
+  .node span { display: block; font-size: 16px; line-height: 24px; color: var(--ink-2); margin-top: 6px; }
+  .arrow { display: flex; align-items: center; justify-content: center; font-size: 28px; color: var(--ink-3); }
+  .node.gate { background: var(--accent); color: #fff; }
+  .node.gate span { color: #e0e7ff; }
+  /* terminal */
+  .term { background: #111113; color: #e4e4e7; border-radius: 14px; padding: 0; overflow: hidden;
+    box-shadow: 0 10px 40px rgba(24,24,27,.25); height: 100%; display: flex; flex-direction: column; }
+  .term-bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: #1c1c1f; font-size: 14px; color: #a1a1aa; }
+  .term-bar i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; background: #3f3f46; }
+  .term-bar em { margin-left: 12px; font-style: normal; }
+  .term-body { padding: 20px 24px; font: 16px/26px "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; flex: 1; overflow: hidden; }
+  .term-body .line { opacity: 0; transition: opacity .35s; }
+  .term-body .line.in { opacity: 1; }
+  .c-user { color: #a5b4fc; } .c-tool { color: #fbbf24; } .c-ok { color: #4ade80; } .c-dim { color: #8b8b94; }
+  .c-warn { color: #fca5a5; } .c-msg { color: #f4f4f5; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 40px; }
+  .stat { background: var(--surface); border-radius: 12px; padding: 24px;
+    box-shadow: 0 2px 4px rgba(24,24,27,.06), 0 6px 16px rgba(24,24,27,.08); }
+  .stat b { display: block; font-size: 40px; line-height: 48px; }
+  .stat span { display: block; font-size: 16px; line-height: 24px; color: var(--ink-2); margin-top: 4px; }
+  .fine { font-size: 16px; line-height: 24px; color: var(--ink-3); margin-top: 28px; max-width: 1000px; }
+  .brand { display: flex; align-items: center; gap: 16px; }
+  .logo { width: 56px; height: 56px; border-radius: 14px; background: var(--accent); color: #fff; display: flex;
+    align-items: center; justify-content: center; font-weight: 700; font-size: 32px; }
+</style>
+</head>
+<body>
+
+<section class="scene" id="intro">
+  <div class="brand fade"><div class="logo">P</div><div class="kicker">Preflight</div></div>
+  <h1 class="fade">Check unfamiliar content<br>before Codex reads it.</h1>
+  <p class="lead fade">Agents now read setup guides, web pages and documents written by strangers.
+    Preflight sits between that content and the agent.</p>
+  <div class="flow fade">
+    <div class="node"><b>Unfamiliar input</b><span>file, PDF or URL a task points at</span></div>
+    <div class="arrow">→</div>
+    <div class="node gate"><b>One pass through the gate</b><span>screen, trace, prepare a copy</span></div>
+    <div class="arrow">→</div>
+    <div class="node"><b>Two outputs</b><span>the original goes to the reviewer; the agent gets the checked copy</span></div>
+  </div>
+</section>
+
+<section class="scene" id="codex" style="padding: 40px 56px;">
+  <div class="term">
+    <div class="term-bar"><i></i><i></i><i></i><em>codex exec  (real run, Preflight MCP server attached)</em></div>
+    <div class="term-body" id="term"></div>
+  </div>
+</section>
+
+<section class="scene" id="outro">
+  <div class="kicker fade">What you just saw was recorded live</div>
+  <h2 class="fade">The original goes to the reviewer.<br>Codex reads only the approved copy.</h2>
+  <div class="stats fade">
+    <div class="stat"><b>12</b><span>real-response regression cases, replayed offline in CI</span></div>
+    <div class="stat"><b>145</b><span>credits for all 12 recordings, 72 Clocked calls</span></div>
+    <div class="stat"><b>1</b><span>SHA-256 per approval: the hash the person approved is the text released</span></div>
+  </div>
+  <p class="fine fade">Synthetic cases, one run on one machine; not an accuracy benchmark. The MCP workflow is a cooperative
+    convention, not a sandbox that intercepts every read. URL results reflect the page on the recording day.</p>
+  <div class="brand fade" style="margin-top: 36px;"><div class="logo">P</div>
+    <div><div style="font-size:24px;font-weight:700">Preflight</div><div style="font-size:16px;color:var(--ink-2)">github.com/miunerofrade/preflight</div></div></div>
+</section>
+
+<script>
+  window.show = id => {
+    document.querySelectorAll(".scene").forEach(s => s.classList.toggle("on", s.id === id));
+    const items = document.querySelectorAll(`#${id} .fade`);
+    items.forEach(el => el.classList.remove("in"));
+    items.forEach((el, i) => setTimeout(() => el.classList.add("in"), 250 + i * 450));
+  };
+  window.termLine = (text, cls = "") => {
+    const d = document.createElement("div");
+    d.className = `line ${cls}`; d.textContent = text;
+    document.getElementById("term").appendChild(d);
+    requestAnimationFrame(() => d.classList.add("in"));
+  };
+</script>
+</body>
+</html>
