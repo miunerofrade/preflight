@@ -37,7 +37,9 @@ Codex receives only the status and usable content or a review link; detailed rep
 remain on the review page. The existing web interface and exports remain available. This workflow is cooperative;
 it does not intercept arbitrary Codex shell/browser reads. See
 [Codex integration](docs/CODEX_INTEGRATION.md) for project configuration, source limits,
-data flow and the release contract. No demonstration site or video is included.
+data flow and the release contract. A short demo video is recorded from the live app and
+a real `codex exec` run with this MCP server attached; the scripts that produce it are in
+[`video/`](video/) (the rendered file is not committed). There is no hosted demo site.
 
 ## The problem
 
